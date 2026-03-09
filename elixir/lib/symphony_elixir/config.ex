@@ -28,7 +28,16 @@ defmodule SymphonyElixir.Config do
   @default_max_concurrent_agents 10
   @default_agent_max_turns 20
   @default_max_retry_backoff_ms 300_000
+  @default_agent_backend "codex"
   @default_codex_command "codex app-server"
+  # Claude Code defaults
+  @default_claude_command "claude"
+  @default_claude_turn_timeout_ms 3_600_000
+  @default_claude_stall_timeout_ms 300_000
+  @default_claude_output_format "stream-json"
+  @default_claude_max_turns 50
+  @default_claude_permission_mode "default"
+  @default_claude_dangerously_skip_permissions false
   @default_codex_turn_timeout_ms 3_600_000
   @default_codex_read_timeout_ms 5_000
   @default_codex_stall_timeout_ms 300_000
@@ -68,7 +77,16 @@ defmodule SymphonyElixir.Config do
                                type: :map,
                                default: %{},
                                keys: [
-                                 interval_ms: [type: :integer, default: @default_poll_interval_ms]
+                                 interval_ms: [type: :integer, default: @default_poll_interval_ms],
+                                 active_hours: [
+                                   type: :map,
+                                   default: %{},
+                                   keys: [
+                                     start: [type: :integer, default: 0],
+                                     end: [type: :integer, default: 24],
+                                     timezone: [type: :string, default: "UTC"]
+                                   ]
+                                 ]
                                ]
                              ],
                              workspace: [
@@ -82,6 +100,10 @@ defmodule SymphonyElixir.Config do
                                type: :map,
                                default: %{},
                                keys: [
+                                 backend: [
+                                   type: :string,
+                                   default: @default_agent_backend
+                                 ],
                                  max_concurrent_agents: [
                                    type: :integer,
                                    default: @default_max_concurrent_agents
@@ -116,6 +138,42 @@ defmodule SymphonyElixir.Config do
                                  stall_timeout_ms: [
                                    type: :integer,
                                    default: @default_codex_stall_timeout_ms
+                                 ]
+                               ]
+                             ],
+                             claude: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 command: [type: :string, default: @default_claude_command],
+                                 model: [type: {:or, [:string, nil]}, default: nil],
+                                 turn_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_claude_turn_timeout_ms
+                                 ],
+                                 stall_timeout_ms: [
+                                   type: :integer,
+                                   default: @default_claude_stall_timeout_ms
+                                 ],
+                                 output_format: [
+                                   type: :string,
+                                   default: @default_claude_output_format
+                                 ],
+                                 max_turns: [
+                                   type: :pos_integer,
+                                   default: @default_claude_max_turns
+                                 ],
+                                 permission_mode: [
+                                   type: :string,
+                                   default: @default_claude_permission_mode
+                                 ],
+                                 dangerously_skip_permissions: [
+                                   type: :boolean,
+                                   default: @default_claude_dangerously_skip_permissions
+                                 ],
+                                 allowed_tools: [
+                                   type: {:list, :string},
+                                   default: []
                                  ]
                                ]
                              ],
@@ -224,6 +282,39 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:polling, :interval_ms])
   end
 
+  @spec polling_active_hours() :: %{start: integer(), end: integer(), timezone: String.t()}
+  def polling_active_hours do
+    get_in(validated_workflow_options(), [:polling, :active_hours])
+  end
+
+  @doc """
+  Returns true if the current time falls within the configured active hours.
+  When start=0 and end=24 (defaults), always returns true.
+  """
+  @spec within_active_hours?() :: boolean()
+  def within_active_hours? do
+    %{start: start_hour, end: end_hour, timezone: timezone} = polling_active_hours()
+
+    if start_hour == 0 and end_hour == 24 do
+      true
+    else
+      case current_hour_in_timezone(timezone) do
+        {:ok, hour} -> hour >= start_hour and hour < end_hour
+        :error -> true
+      end
+    end
+  end
+
+  defp current_hour_in_timezone(timezone) do
+    case System.cmd("date", ["+%H"], env: [{"TZ", timezone}], stderr_to_stdout: true) do
+      {hour_str, 0} ->
+        {:ok, hour_str |> String.trim() |> String.to_integer()}
+
+      _ ->
+        :error
+    end
+  end
+
   @spec workspace_root() :: Path.t()
   def workspace_root do
     validated_workflow_options()
@@ -272,6 +363,72 @@ defmodule SymphonyElixir.Config do
   end
 
   def max_concurrent_agents_for_state(_state_name), do: max_concurrent_agents()
+
+  @spec agent_backend() :: String.t()
+  def agent_backend do
+    get_in(validated_workflow_options(), [:agent, :backend])
+  end
+
+  @doc "Returns the agent runner module for the configured backend."
+  @spec agent_runner_module() :: module()
+  def agent_runner_module do
+    case agent_backend() do
+      "claude" -> SymphonyElixir.Claude.AgentRunner
+      _ -> SymphonyElixir.AgentRunner
+    end
+  end
+
+  # Claude Code config accessors
+
+  @spec claude_command() :: String.t()
+  def claude_command do
+    get_in(validated_workflow_options(), [:claude, :command])
+  end
+
+  @spec claude_model() :: String.t() | nil
+  def claude_model do
+    get_in(validated_workflow_options(), [:claude, :model])
+  end
+
+  @spec claude_turn_timeout_ms() :: pos_integer()
+  def claude_turn_timeout_ms do
+    get_in(validated_workflow_options(), [:claude, :turn_timeout_ms])
+  end
+
+  @spec claude_stall_timeout_ms() :: non_neg_integer()
+  def claude_stall_timeout_ms do
+    validated_workflow_options()
+    |> get_in([:claude, :stall_timeout_ms])
+    |> max(0)
+  end
+
+  @spec claude_output_format() :: String.t()
+  def claude_output_format do
+    get_in(validated_workflow_options(), [:claude, :output_format])
+  end
+
+  @spec claude_max_turns() :: pos_integer()
+  def claude_max_turns do
+    get_in(validated_workflow_options(), [:claude, :max_turns])
+  end
+
+  @spec claude_permission_mode() :: String.t()
+  def claude_permission_mode do
+    get_in(validated_workflow_options(), [:claude, :permission_mode])
+  end
+
+  @spec claude_dangerously_skip_permissions?() :: boolean()
+  def claude_dangerously_skip_permissions? do
+    get_in(validated_workflow_options(), [:claude, :dangerously_skip_permissions])
+  end
+
+  @spec claude_allowed_tools() :: [String.t()] | nil
+  def claude_allowed_tools do
+    case get_in(validated_workflow_options(), [:claude, :allowed_tools]) do
+      [] -> nil
+      tools -> tools
+    end
+  end
 
   @spec codex_command() :: String.t()
   def codex_command do
@@ -366,9 +523,11 @@ defmodule SymphonyElixir.Config do
     with {:ok, _workflow} <- current_workflow(),
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
-         :ok <- require_linear_project(),
-         :ok <- require_valid_codex_runtime_settings() do
-      require_codex_command()
+         :ok <- require_linear_project() do
+      case agent_backend() do
+        "claude" -> require_claude_command()
+        _ -> with(:ok <- require_valid_codex_runtime_settings(), do: require_codex_command())
+      end
     end
   end
 
@@ -431,6 +590,14 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  defp require_claude_command do
+    if byte_size(String.trim(claude_command())) > 0 do
+      :ok
+    else
+      {:error, :missing_claude_command}
+    end
+  end
+
   defp require_valid_codex_runtime_settings do
     case codex_runtime_settings() do
       {:ok, _settings} -> :ok
@@ -451,6 +618,7 @@ defmodule SymphonyElixir.Config do
       workspace: extract_workspace_options(section_map(config, "workspace")),
       agent: extract_agent_options(section_map(config, "agent")),
       codex: extract_codex_options(section_map(config, "codex")),
+      claude: extract_claude_options(section_map(config, "claude")),
       hooks: extract_hooks_options(section_map(config, "hooks")),
       observability: extract_observability_options(section_map(config, "observability")),
       server: extract_server_options(section_map(config, "server"))
@@ -470,6 +638,14 @@ defmodule SymphonyElixir.Config do
   defp extract_polling_options(section) do
     %{}
     |> put_if_present(:interval_ms, integer_value(Map.get(section, "interval_ms")))
+    |> put_if_present(:active_hours, extract_active_hours(section_map(section, "active_hours")))
+  end
+
+  defp extract_active_hours(section) do
+    %{}
+    |> put_if_present(:start, integer_value(Map.get(section, "start")))
+    |> put_if_present(:end, integer_value(Map.get(section, "end")))
+    |> put_if_present(:timezone, scalar_string_value(Map.get(section, "timezone")))
   end
 
   defp extract_workspace_options(section) do
@@ -479,6 +655,7 @@ defmodule SymphonyElixir.Config do
 
   defp extract_agent_options(section) do
     %{}
+    |> put_if_present(:backend, scalar_string_value(Map.get(section, "backend")))
     |> put_if_present(:max_concurrent_agents, integer_value(Map.get(section, "max_concurrent_agents")))
     |> put_if_present(:max_turns, positive_integer_value(Map.get(section, "max_turns")))
     |> put_if_present(:max_retry_backoff_ms, positive_integer_value(Map.get(section, "max_retry_backoff_ms")))
@@ -494,6 +671,19 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:read_timeout_ms, integer_value(Map.get(section, "read_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
+  end
+
+  defp extract_claude_options(section) do
+    %{}
+    |> put_if_present(:command, command_value(Map.get(section, "command")))
+    |> put_if_present(:model, scalar_string_value(Map.get(section, "model")))
+    |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
+    |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
+    |> put_if_present(:output_format, scalar_string_value(Map.get(section, "output_format")))
+    |> put_if_present(:max_turns, positive_integer_value(Map.get(section, "max_turns")))
+    |> put_if_present(:permission_mode, scalar_string_value(Map.get(section, "permission_mode")))
+    |> put_if_present(:dangerously_skip_permissions, boolean_value(Map.get(section, "dangerously_skip_permissions")))
+    |> put_if_present(:allowed_tools, csv_value(Map.get(section, "allowed_tools")))
   end
 
   defp extract_hooks_options(section) do

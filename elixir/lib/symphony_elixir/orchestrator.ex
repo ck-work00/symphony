@@ -7,7 +7,8 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{Config, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Evaluator, History, StatusDashboard, Tracker, Workspace}
+  alias SymphonyElixir.Claude.StreamParser
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 1_000
@@ -33,6 +34,7 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       running: %{},
       completed: MapSet.new(),
+      completed_history: [],
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
@@ -99,6 +101,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
+        state = record_completed_history(state, running_entry, reason)
         session_id = running_entry_session_id(running_entry)
 
         state =
@@ -617,6 +620,15 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
 
+        # Remove any stale completed_history entry if this issue is being re-dispatched
+        completed_history =
+          Enum.reject(state.completed_history, fn entry ->
+            entry[:issue_identifier] == issue.identifier
+          end)
+
+        now = DateTime.utc_now()
+        history_run_id = record_dispatch_to_history(issue, attempt, now)
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
@@ -635,13 +647,17 @@ defmodule SymphonyElixir.Orchestrator do
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
             turn_count: 0,
+            phase: nil,
+            pr_url: nil,
             retry_attempt: normalize_retry_attempt(attempt),
-            started_at: DateTime.utc_now()
+            started_at: now,
+            history_run_id: history_run_id
           })
 
         %{
           state
           | running: running,
+            completed_history: completed_history,
             claimed: MapSet.put(state.claimed, issue.id),
             retry_attempts: Map.delete(state.retry_attempts, issue.id)
         }
@@ -947,6 +963,8 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_timestamp: metadata.last_codex_timestamp,
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
+          phase: Map.get(metadata, :phase),
+          pr_url: Map.get(metadata, :pr_url),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -967,6 +985,7 @@ defmodule SymphonyElixir.Orchestrator do
      %{
        running: running,
        retrying: retrying,
+       completed_history: state.completed_history,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
@@ -1006,12 +1025,18 @@ defmodule SymphonyElixir.Orchestrator do
     last_reported_total = Map.get(running_entry, :codex_last_reported_total_tokens, 0)
     turn_count = Map.get(running_entry, :turn_count, 0)
 
+    # Detect phase and PR URL from agent messages (sticky — only updates when found)
+    phase = phase_for_update(running_entry, update)
+    pr_url = pr_url_for_update(running_entry, update)
+
     {
       Map.merge(running_entry, %{
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
         last_codex_event: event,
+        phase: phase,
+        pr_url: pr_url,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -1024,6 +1049,24 @@ defmodule SymphonyElixir.Orchestrator do
       token_delta
     }
   end
+
+  defp phase_for_update(running_entry, %{raw: raw}) when is_map(raw) do
+    case StreamParser.extract_phase(raw) do
+      nil -> Map.get(running_entry, :phase)
+      phase -> phase
+    end
+  end
+
+  defp phase_for_update(running_entry, _update), do: Map.get(running_entry, :phase)
+
+  defp pr_url_for_update(running_entry, %{raw: raw}) when is_map(raw) do
+    case StreamParser.extract_pr_url(raw) do
+      nil -> Map.get(running_entry, :pr_url)
+      url -> url
+    end
+  end
+
+  defp pr_url_for_update(running_entry, _update), do: Map.get(running_entry, :pr_url)
 
   defp codex_app_server_pid_for_update(_existing, %{codex_app_server_pid: pid})
        when is_binary(pid),
@@ -1107,6 +1150,125 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
+
+  defp record_completed_history(%State{} = state, running_entry, reason)
+       when is_map(running_entry) do
+    now = DateTime.utc_now()
+    outcome = if(reason == :normal, do: "completed", else: "failed")
+
+    summary = %{
+      issue_id: running_entry[:identifier] || "unknown",
+      issue_identifier: running_entry[:identifier],
+      started_at: running_entry[:started_at],
+      completed_at: now,
+      phase: Map.get(running_entry, :phase),
+      pr_url: Map.get(running_entry, :pr_url),
+      outcome: outcome,
+      turn_count: Map.get(running_entry, :turn_count, 0),
+      tokens: %{
+        input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+        output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+        total_tokens: Map.get(running_entry, :codex_total_tokens, 0)
+      }
+    }
+
+    record_completion_to_history(running_entry, outcome, reason, now)
+
+    %{state | completed_history: [summary | state.completed_history]}
+  end
+
+  defp record_completed_history(state, _running_entry, _reason), do: state
+
+  defp record_dispatch_to_history(issue, attempt, now) do
+    attrs = %{
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      issue_title: issue.title,
+      issue_priority: issue.priority,
+      issue_labels: issue.labels || [],
+      filter_source: "project",
+      project_slug: Config.linear_project_slug(),
+      started_at: now,
+      agent_backend: Config.agent_backend(),
+      retry_attempt: normalize_retry_attempt(attempt) || 0
+    }
+
+    case History.record_dispatch(attrs) do
+      {:ok, run} ->
+        run.id
+
+      {:error, reason} ->
+        Logger.warning("Failed to record dispatch to history: #{inspect(reason)}")
+        nil
+    end
+  end
+
+  defp record_completion_to_history(running_entry, outcome, reason, now) do
+    run_id = Map.get(running_entry, :history_run_id)
+
+    if run_id do
+      started_at = Map.get(running_entry, :started_at)
+
+      wall_clock_ms =
+        if started_at do
+          DateTime.diff(now, started_at, :millisecond)
+        end
+
+      error_info = categorize_error(reason)
+
+      attrs = %{
+        finished_at: now,
+        outcome: outcome,
+        session_id: Map.get(running_entry, :session_id),
+        turns_used: Map.get(running_entry, :turn_count, 0),
+        input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+        output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+        total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
+        wall_clock_ms: wall_clock_ms,
+        final_phase: Map.get(running_entry, :phase),
+        error_message: error_info[:message],
+        error_category: error_info[:category]
+      }
+
+      # Record completion, then run evaluation
+      case History.record_completion(run_id, attrs) do
+        {:ok, _run} ->
+          run_context = %{
+            issue_id: Map.get(running_entry, :issue, %{}) |> Map.get(:id),
+            branch_name: Map.get(running_entry, :issue, %{}) |> Map.get(:branch_name),
+            identifier: Map.get(running_entry, :identifier)
+          }
+
+          identifier = running_entry[:identifier]
+          safe_id = if identifier, do: String.replace(identifier, ~r/[^a-zA-Z0-9_\-]/, ""), else: nil
+          workspace_path = if safe_id, do: Path.join(Config.workspace_root(), safe_id), else: nil
+          Evaluator.evaluate_and_record(run_id, run_context, workspace_path)
+
+        {:error, reason} ->
+          Logger.warning("Failed to record completion to history: #{inspect(reason)}")
+      end
+    end
+  rescue
+    error ->
+      Logger.warning("Failed to record completion to history: #{Exception.message(error)}")
+  end
+
+  defp categorize_error(:normal), do: %{message: nil, category: nil}
+
+  defp categorize_error(reason) do
+    message = inspect(reason)
+
+    category =
+      cond do
+        message =~ "timeout" or message =~ "Timeout" -> "timeout"
+        message =~ "stall" or message =~ "Stall" -> "stall"
+        message =~ "rate_limit" or message =~ "429" -> "rate_limit"
+        message =~ "spawn" -> "spawn_failure"
+        true -> "crash"
+      end
+
+    %{message: String.slice(message, 0, 500), category: category}
+  end
 
   defp refresh_runtime_config(%State{} = state) do
     %{

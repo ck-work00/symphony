@@ -26,6 +26,12 @@ defmodule SymphonyElixir.MixProject do
           SymphonyElixir.StatusDashboard,
           SymphonyElixir.LogFile,
           SymphonyElixir.Workspace,
+          SymphonyElixir.Repo,
+          SymphonyElixir.Repo.Migrator,
+          SymphonyElixir.History,
+          SymphonyElixir.History.Run,
+          SymphonyElixir.History.RunEvent,
+          SymphonyElixir.Evaluator,
           SymphonyElixirWeb.DashboardLive,
           SymphonyElixirWeb.Endpoint,
           SymphonyElixirWeb.ErrorHTML,
@@ -64,6 +70,8 @@ defmodule SymphonyElixir.MixProject do
   defp deps do
     [
       {:bandit, "~> 1.8"},
+      {:ecto_sql, "~> 3.12"},
+      {:ecto_sqlite3, "~> 0.17"},
       {:floki, ">= 0.30.0", only: :test},
       {:lazy_html, ">= 0.1.0", only: :test},
       {:phoenix, "~> 1.8.0"},

@@ -22,8 +22,11 @@ defmodule SymphonyElixir.Application do
   @impl true
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
+    :ok = SymphonyElixir.Repo.configure()
 
     children = [
+      SymphonyElixir.Repo,
+      SymphonyElixir.Repo.Migrator,
       {Phoenix.PubSub, name: SymphonyElixir.PubSub},
       {Task.Supervisor, name: SymphonyElixir.TaskSupervisor},
       SymphonyElixir.WorkflowStore,

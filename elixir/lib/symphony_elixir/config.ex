@@ -62,6 +62,7 @@ defmodule SymphonyElixir.Config do
                                  endpoint: [type: :string, default: @default_linear_endpoint],
                                  api_key: [type: {:or, [:string, nil]}, default: nil],
                                  project_slug: [type: {:or, [:string, nil]}, default: nil],
+                                 filter: [type: {:or, [:map, nil]}, default: nil],
                                  assignee: [type: {:or, [:string, nil]}, default: nil],
                                  active_states: [
                                    type: {:list, :string},
@@ -257,6 +258,26 @@ defmodule SymphonyElixir.Config do
   @spec linear_project_slug() :: String.t() | nil
   def linear_project_slug do
     get_in(validated_workflow_options(), [:tracker, :project_slug])
+  end
+
+  @doc """
+  Returns the composable filter config for Linear issue targeting.
+  Falls back to wrapping `project_slug` if no explicit filter is configured.
+  """
+  @spec linear_filter() :: map()
+  def linear_filter do
+    opts = validated_workflow_options()
+    explicit_filter = get_in(opts, [:tracker, :filter]) || %{}
+
+    if explicit_filter == %{} do
+      # Legacy: wrap project_slug into filter format
+      case get_in(opts, [:tracker, :project_slug]) do
+        slug when is_binary(slug) and slug != "" -> %{project: slug}
+        _ -> %{}
+      end
+    else
+      explicit_filter
+    end
   end
 
   @spec linear_assignee() :: String.t() | nil
@@ -523,7 +544,7 @@ defmodule SymphonyElixir.Config do
     with {:ok, _workflow} <- current_workflow(),
          :ok <- require_tracker_kind(),
          :ok <- require_linear_token(),
-         :ok <- require_linear_project() do
+         :ok <- require_linear_target() do
       case agent_backend() do
         "claude" -> require_claude_command()
         _ -> with(:ok <- require_valid_codex_runtime_settings(), do: require_codex_command())
@@ -568,13 +589,19 @@ defmodule SymphonyElixir.Config do
     end
   end
 
-  defp require_linear_project do
+  defp require_linear_target do
     case tracker_kind() do
       "linear" ->
-        if is_binary(linear_project_slug()) do
+        filter = linear_filter()
+
+        if SymphonyElixir.Linear.FilterBuilder.valid?(filter) do
           :ok
         else
-          {:error, :missing_linear_project_slug}
+          if is_binary(linear_project_slug()) do
+            :ok
+          else
+            {:error, :missing_linear_filter}
+          end
         end
 
       _ ->
@@ -631,6 +658,8 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:endpoint, scalar_string_value(Map.get(section, "endpoint")))
     |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
     |> put_if_present(:project_slug, scalar_string_value(Map.get(section, "project_slug")))
+    |> put_if_present(:filter, map_value(Map.get(section, "filter")))
+    |> put_if_present(:assignee, scalar_string_value(Map.get(section, "assignee")))
     |> put_if_present(:active_states, csv_value(Map.get(section, "active_states")))
     |> put_if_present(:terminal_states, csv_value(Map.get(section, "terminal_states")))
   end
@@ -821,6 +850,9 @@ defmodule SymphonyElixir.Config do
       :error -> :omit
     end
   end
+
+  defp map_value(value) when is_map(value) and map_size(value) > 0, do: value
+  defp map_value(_value), do: :omit
 
   defp boolean_value(value) when is_boolean(value), do: value
 

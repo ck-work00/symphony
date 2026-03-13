@@ -198,6 +198,10 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Linear project slug missing in WORKFLOW.md")
         state
 
+      {:error, :missing_linear_filter} ->
+        Logger.error("No Linear targeting configured in WORKFLOW.md (need project_slug or filter)")
+        state
+
       {:error, :missing_tracker_kind} ->
         Logger.error("Tracker kind missing in WORKFLOW.md")
 

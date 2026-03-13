@@ -4,10 +4,55 @@ defmodule SymphonyElixir.Linear.Client do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, Linear.Issue}
+  alias SymphonyElixir.{Config, Linear.FilterBuilder, Linear.Issue}
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
+
+  @filter_query """
+  query SymphonyLinearFilterPoll($filter: IssueFilter, $first: Int!, $relationFirst: Int!, $after: String) {
+    issues(filter: $filter, first: $first, after: $after) {
+      nodes {
+        id
+        identifier
+        title
+        description
+        priority
+        state {
+          name
+        }
+        branchName
+        url
+        assignee {
+          id
+        }
+        labels {
+          nodes {
+            name
+          }
+        }
+        inverseRelations(first: $relationFirst) {
+          nodes {
+            type
+            issue {
+              id
+              identifier
+              state {
+                name
+              }
+            }
+          }
+        }
+        createdAt
+        updatedAt
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+  """
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -95,6 +140,24 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @comments_query """
+  query SymphonyLinearComments($issueId: String!, $first: Int!) {
+    issue(id: $issueId) {
+      comments(first: $first, orderBy: createdAt) {
+        nodes {
+          id
+          body
+          createdAt
+          user {
+            name
+            isMe
+          }
+        }
+      }
+    }
+  }
+  """
+
   @viewer_query """
   query SymphonyLinearViewer {
     viewer {
@@ -105,18 +168,28 @@ defmodule SymphonyElixir.Linear.Client do
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
-    project_slug = Config.linear_project_slug()
-
     cond do
       is_nil(Config.linear_api_token()) ->
         {:error, :missing_linear_api_token}
 
-      is_nil(project_slug) ->
-        {:error, :missing_linear_project_slug}
-
       true ->
-        with {:ok, assignee_filter} <- routing_assignee_filter() do
-          do_fetch_by_states(project_slug, Config.linear_active_states(), assignee_filter)
+        filter_config = Config.linear_filter()
+
+        if FilterBuilder.valid?(filter_config) do
+          with {:ok, assignee_filter} <- routing_assignee_filter() do
+            do_fetch_by_filter(filter_config, Config.linear_active_states(), assignee_filter)
+          end
+        else
+          # Legacy fallback: project_slug only
+          project_slug = Config.linear_project_slug()
+
+          if is_nil(project_slug) do
+            {:error, :missing_linear_filter}
+          else
+            with {:ok, assignee_filter} <- routing_assignee_filter() do
+              do_fetch_by_states(project_slug, Config.linear_active_states(), assignee_filter)
+            end
+          end
         end
     end
   end
@@ -128,17 +201,22 @@ defmodule SymphonyElixir.Linear.Client do
     if normalized_states == [] do
       {:ok, []}
     else
-      project_slug = Config.linear_project_slug()
+      if is_nil(Config.linear_api_token()) do
+        {:error, :missing_linear_api_token}
+      else
+        filter_config = Config.linear_filter()
 
-      cond do
-        is_nil(Config.linear_api_token()) ->
-          {:error, :missing_linear_api_token}
+        if FilterBuilder.valid?(filter_config) do
+          do_fetch_by_filter(filter_config, normalized_states, nil)
+        else
+          project_slug = Config.linear_project_slug()
 
-        is_nil(project_slug) ->
-          {:error, :missing_linear_project_slug}
-
-        true ->
-          do_fetch_by_states(project_slug, normalized_states, nil)
+          if is_nil(project_slug) do
+            {:error, :missing_linear_filter}
+          else
+            do_fetch_by_states(project_slug, normalized_states, nil)
+          end
+        end
       end
     end
   end
@@ -155,6 +233,53 @@ defmodule SymphonyElixir.Linear.Client do
         with {:ok, assignee_filter} <- routing_assignee_filter() do
           do_fetch_issue_states(ids, assignee_filter)
         end
+    end
+  end
+
+  @doc """
+  Fetch comments on an issue, optionally filtered to those created after `since`.
+  Returns `{:ok, [%{body: String.t(), author: String.t(), created_at: DateTime.t()}]}`.
+  """
+  @spec fetch_issue_comments(String.t(), DateTime.t() | nil) :: {:ok, list(map())} | {:error, term()}
+  @agent_prefix "@agent"
+
+  def fetch_issue_comments(issue_id, since \\ nil) when is_binary(issue_id) do
+    case graphql(@comments_query, %{issueId: issue_id, first: 50}) do
+      {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => nodes}}}}} ->
+        comments =
+          nodes
+          |> Enum.map(fn node ->
+            %{
+              body: node["body"] || "",
+              author: get_in(node, ["user", "name"]) || "Unknown",
+              created_at: parse_datetime(node["createdAt"])
+            }
+          end)
+          |> Enum.filter(fn c -> String.starts_with?(String.trim(c.body), @agent_prefix) end)
+          |> Enum.map(fn c ->
+            # Strip the @agent prefix from the body before passing to the agent
+            %{c | body: c.body |> String.trim() |> String.trim_leading(@agent_prefix) |> String.trim()}
+          end)
+          |> then(fn comments ->
+            case since do
+              %DateTime{} = dt ->
+                Enum.filter(comments, fn c ->
+                  c.created_at != nil and DateTime.compare(c.created_at, dt) == :gt
+                end)
+
+              _ ->
+                comments
+            end
+          end)
+
+        {:ok, comments}
+
+      {:ok, _body} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        Logger.warning("Failed to fetch comments for issue #{issue_id}: #{inspect(reason)}")
+        {:ok, []}
     end
   end
 
@@ -216,6 +341,35 @@ defmodule SymphonyElixir.Linear.Client do
     issue_pages
     |> Enum.reduce([], &prepend_page_issues/2)
     |> finalize_paginated_issues()
+  end
+
+  defp do_fetch_by_filter(filter_config, state_names, assignee_filter) do
+    graphql_filter = FilterBuilder.build(filter_config, state_names)
+    do_fetch_by_filter_page(graphql_filter, assignee_filter, nil, [])
+  end
+
+  defp do_fetch_by_filter_page(graphql_filter, assignee_filter, after_cursor, acc_issues) do
+    with {:ok, body} <-
+           graphql(@filter_query, %{
+             filter: graphql_filter,
+             first: @issue_page_size,
+             relationFirst: @issue_page_size,
+             after: after_cursor
+           }),
+         {:ok, issues, page_info} <- decode_linear_page_response(body, assignee_filter) do
+      updated_acc = prepend_page_issues(issues, acc_issues)
+
+      case next_page_cursor(page_info) do
+        {:ok, next_cursor} ->
+          do_fetch_by_filter_page(graphql_filter, assignee_filter, next_cursor, updated_acc)
+
+        :done ->
+          {:ok, finalize_paginated_issues(updated_acc)}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
   end
 
   defp do_fetch_by_states(project_slug, state_names, assignee_filter) do

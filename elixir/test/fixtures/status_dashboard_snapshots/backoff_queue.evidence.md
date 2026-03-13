@@ -9,7 +9,7 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
+│   ID       PHASE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │ ● MT-638   retrying       4242     20m 25s / 7      14,200 thre...567890  agent message streaming: waiting on ...
 │
@@ -19,5 +19,9 @@
 │  ↻ MT-451 attempt=2 in 3.900s error=retrying after API timeout with jitter
 │  ↻ MT-452 attempt=6 in 8.100s error=worker crashed restarting cleanly
 │  ↻ MT-453 attempt=1 in 11.000s error=fourth queued retry should also render after removing the top-three limit
+│
+├─ Completed
+│
+│  No completed work yet
 ╰─
 ```

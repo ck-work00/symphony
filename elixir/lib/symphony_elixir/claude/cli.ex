@@ -76,7 +76,8 @@ defmodule SymphonyElixir.Claude.CLI do
         stream_loop(port, deadline, stall_deadline, stall_timeout_ms, on_event, %{
           session_id: nil,
           usage: nil,
-          buffer: ""
+          buffer: "",
+          task_complete: false
         })
       catch
         :exit, reason ->
@@ -119,7 +120,8 @@ defmodule SymphonyElixir.Claude.CLI do
              %{
                session_id: state.session_id,
                exit_code: 0,
-               usage: state.usage
+               usage: state.usage,
+               task_complete: state.task_complete
              }}
 
           {^port, {:exit_status, code}} ->
@@ -137,6 +139,8 @@ defmodule SymphonyElixir.Claude.CLI do
     end
   end
 
+  @task_complete_marker "SYMPHONY_TASK_COMPLETE"
+
   defp handle_line(line, on_event, state) do
     # Strip trailing \r from PTY line discipline (script wrapper adds \r\n)
     full_line = String.trim_trailing(state.buffer <> line, "\r")
@@ -146,8 +150,9 @@ defmodule SymphonyElixir.Claude.CLI do
       {:ok, event} ->
         session_id = StreamParser.extract_session_id(event) || state.session_id
         usage = StreamParser.extract_usage(event) || state.usage
+        task_complete = state.task_complete || event_contains_completion_marker?(event)
         on_event.(event)
-        %{state | session_id: session_id, usage: usage}
+        %{state | session_id: session_id, usage: usage, task_complete: task_complete}
 
       {:error, reason} ->
         Logger.debug(
@@ -156,6 +161,31 @@ defmodule SymphonyElixir.Claude.CLI do
 
         state
     end
+  end
+
+  defp event_contains_completion_marker?(event) do
+    text = extract_event_text(event)
+    String.contains?(text, @task_complete_marker)
+  end
+
+  defp extract_event_text(event) do
+    # Check assistant message text
+    message = Map.get(event, "message") || %{}
+    content = Map.get(message, "content") || []
+
+    text_parts =
+      content
+      |> List.wrap()
+      |> Enum.flat_map(fn
+        %{"type" => "text", "text" => text} -> [text]
+        _ -> []
+      end)
+
+    # Check result text
+    result = Map.get(event, "result") || ""
+    result_text = if is_binary(result), do: result, else: ""
+
+    Enum.join(text_parts, "\n") <> "\n" <> result_text
   end
 
   defp build_first_turn_args(prompt) do

@@ -312,6 +312,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             completed_history: Map.get(snapshot, :completed_history, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -340,9 +341,11 @@ defmodule SymphonyElixir.StatusDashboard do
         agent_count = length(running)
         max_agents = Config.max_concurrent_agents()
         running_event_width = running_event_width(terminal_columns_override)
+        completed_history = Map.get(snapshot, :completed_history, [])
         running_rows = format_running_rows(running, running_event_width)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        completed_rows = format_completed_rows(completed_history)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -371,6 +374,8 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           ["│", colorize("├─ Completed", @ansi_bold), "│"] ++
+           completed_rows ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -557,6 +562,7 @@ defmodule SymphonyElixir.StatusDashboard do
            %{
              running: running,
              retrying: retrying,
+             completed_history: Map.get(snapshot, :completed_history, []),
              codex_totals: codex_totals,
              rate_limits: Map.get(snapshot, :rate_limits),
              polling: Map.get(snapshot, :polling)
@@ -586,8 +592,8 @@ defmodule SymphonyElixir.StatusDashboard do
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, running_event_width) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
-    state = running_entry.state || "unknown"
-    state_display = format_cell(to_string(state), @running_stage_width)
+    phase_or_state = Map.get(running_entry, :phase) || running_entry.state || "unknown"
+    state_display = format_cell(to_string(phase_or_state), @running_stage_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
     total_tokens = running_entry.codex_total_tokens || 0
@@ -641,6 +647,48 @@ defmodule SymphonyElixir.StatusDashboard do
   @doc false
   @spec tps_graph_for_test([{integer(), integer()}], integer(), integer()) :: String.t()
   def tps_graph_for_test(samples, now_ms, current_tokens), do: tps_graph(samples, now_ms, current_tokens)
+
+  defp format_completed_rows([]) do
+    ["│  " <> colorize("No completed work yet", @ansi_gray)]
+  end
+
+  defp format_completed_rows(history) do
+    history
+    |> Enum.take(10)
+    |> Enum.map(&format_completed_summary/1)
+  end
+
+  defp format_completed_summary(entry) do
+    identifier = entry[:issue_identifier] || "unknown"
+    outcome = entry[:outcome] || "unknown"
+    pr_url = entry[:pr_url]
+    completed_at = entry[:completed_at]
+
+    outcome_color = if outcome == "completed", do: @ansi_green, else: @ansi_red
+    outcome_icon = if outcome == "completed", do: "✓", else: "✗"
+
+    time_str =
+      if completed_at do
+        Calendar.strftime(completed_at, "%H:%M:%S")
+      else
+        "??:??:??"
+      end
+
+    pr_part =
+      if pr_url do
+        " " <> colorize(pr_url, @ansi_cyan)
+      else
+        ""
+      end
+
+    "│  " <>
+      colorize(outcome_icon, outcome_color) <>
+      " " <>
+      colorize(identifier, @ansi_cyan) <>
+      " " <>
+      colorize(time_str, @ansi_gray) <>
+      pr_part
+  end
 
   defp format_retry_rows(retrying) do
     if retrying == [] do
@@ -737,7 +785,7 @@ defmodule SymphonyElixir.StatusDashboard do
     header =
       [
         format_cell("ID", @running_id_width),
-        format_cell("STAGE", @running_stage_width),
+        format_cell("PHASE", @running_stage_width),
         format_cell("PID", @running_pid_width),
         format_cell("AGE / TURN", @running_age_width),
         format_cell("TOKENS", @running_tokens_width),

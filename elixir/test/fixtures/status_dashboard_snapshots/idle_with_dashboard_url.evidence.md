@@ -10,12 +10,16 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
+│   ID       PHASE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
 │   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 │  No active agents
 │
 ├─ Backoff queue
 │
 │  No queued retries
+│
+├─ Completed
+│
+│  No completed work yet
 ╰─
 ```

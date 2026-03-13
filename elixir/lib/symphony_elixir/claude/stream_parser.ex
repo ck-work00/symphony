@@ -95,18 +95,14 @@ defmodule SymphonyElixir.Claude.StreamParser do
   """
   @spec extract_phase(map()) :: String.t() | nil
   def extract_phase(%{event_type: :assistant} = event) do
-    # First check for explicit phase headers in text
     text = extract_text_content(event)
-    explicit = detect_phase_header(text)
 
-    if explicit do
-      explicit
-    else
-      # Infer from tool usage
-      event
-      |> extract_tool_uses()
-      |> infer_phase_from_tools()
-    end
+    # Priority 1: Explicit SYMPHONY_PHASE marker
+    detect_symphony_phase(text) ||
+      # Priority 2: Markdown phase headers
+      detect_phase_header(text) ||
+      # Priority 3: Tool-based heuristic
+      (event |> extract_tool_uses() |> infer_phase_from_tools())
   end
 
   def extract_phase(_event), do: nil
@@ -123,6 +119,18 @@ defmodule SymphonyElixir.Claude.StreamParser do
       _ -> []
     end)
     |> Enum.join("\n")
+  end
+
+  # Match "SYMPHONY_PHASE: Name" markers
+  @symphony_phase_regex ~r/SYMPHONY_PHASE:\s*(.+)/
+
+  defp detect_symphony_phase(""), do: nil
+
+  defp detect_symphony_phase(text) do
+    case Regex.run(@symphony_phase_regex, text) do
+      [_, phase_name] -> phase_name |> String.trim() |> String.slice(0, 30)
+      nil -> nil
+    end
   end
 
   # Match "### Phase N: Name" or "## Phase: Name" patterns

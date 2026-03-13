@@ -80,6 +80,39 @@ defmodule SymphonyElixir.Claude.StreamParserTest do
       assert StreamParser.extract_phase(event) == "Ship"
     end
 
+    test "extracts SYMPHONY_PHASE marker with highest priority" do
+      event = assistant_text_event("SYMPHONY_PHASE: Investigate\n\nLet me look at the code...")
+      assert StreamParser.extract_phase(event) == "Investigate"
+    end
+
+    test "SYMPHONY_PHASE takes priority over tool-based inference" do
+      # Event has both a SYMPHONY_PHASE marker and an Edit tool use
+      event = %{
+        "message" => %{
+          "content" => [
+            %{"type" => "text", "text" => "SYMPHONY_PHASE: Test"},
+            %{"type" => "tool_use", "name" => "Edit", "input" => %{"file_path" => "/f.ex"}}
+          ]
+        }
+      }
+      |> Map.put(:event_type, :assistant)
+
+      # Should return "Test" from SYMPHONY_PHASE, not "Implement" from Edit
+      assert StreamParser.extract_phase(event) == "Test"
+    end
+
+    test "SYMPHONY_PHASE handles all standard phases" do
+      for phase <- ["Investigate", "Plan", "Implement", "Test", "Evidence", "Ship"] do
+        event = assistant_text_event("SYMPHONY_PHASE: #{phase}")
+        assert StreamParser.extract_phase(event) == phase
+      end
+    end
+
+    test "SYMPHONY_PHASE trims whitespace" do
+      event = assistant_text_event("SYMPHONY_PHASE:   Ship  ")
+      assert StreamParser.extract_phase(event) == "Ship"
+    end
+
     test "returns nil for non-assistant events" do
       event = %{"message" => %{"content" => []}} |> Map.put(:event_type, :tool_result)
       assert StreamParser.extract_phase(event) == nil

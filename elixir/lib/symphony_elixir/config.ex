@@ -123,7 +123,25 @@ defmodule SymphonyElixir.Config do
                                  ]
                                ]
                              ],
-                             codex: [
+                             suitability: [
+                              type: :map,
+                              default: %{},
+                              keys: [
+                                skip_labels: [
+                                  type: {:list, :string},
+                                  default: []
+                                ],
+                                require_description: [
+                                  type: :boolean,
+                                  default: false
+                                ],
+                                min_priority: [
+                                  type: {:or, [:pos_integer, nil]},
+                                  default: nil
+                                ]
+                              ]
+                            ],
+                            codex: [
                                type: :map,
                                default: %{},
                                keys: [
@@ -385,6 +403,21 @@ defmodule SymphonyElixir.Config do
 
   def max_concurrent_agents_for_state(_state_name), do: max_concurrent_agents()
 
+  @spec suitability_rules() :: %{
+          skip_labels: [String.t()],
+          require_description: boolean(),
+          min_priority: pos_integer() | nil
+        }
+  def suitability_rules do
+    opts = get_in(validated_workflow_options(), [:suitability])
+
+    %{
+      skip_labels: Map.get(opts, :skip_labels, []),
+      require_description: Map.get(opts, :require_description, false),
+      min_priority: Map.get(opts, :min_priority)
+    }
+  end
+
   @spec agent_backend() :: String.t()
   def agent_backend do
     get_in(validated_workflow_options(), [:agent, :backend])
@@ -644,6 +677,7 @@ defmodule SymphonyElixir.Config do
       polling: extract_polling_options(section_map(config, "polling")),
       workspace: extract_workspace_options(section_map(config, "workspace")),
       agent: extract_agent_options(section_map(config, "agent")),
+      suitability: extract_suitability_options(section_map(config, "suitability")),
       codex: extract_codex_options(section_map(config, "codex")),
       claude: extract_claude_options(section_map(config, "claude")),
       hooks: extract_hooks_options(section_map(config, "hooks")),
@@ -692,6 +726,13 @@ defmodule SymphonyElixir.Config do
       :max_concurrent_agents_by_state,
       state_limits_value(Map.get(section, "max_concurrent_agents_by_state"))
     )
+  end
+
+  defp extract_suitability_options(section) do
+    %{}
+    |> put_if_present(:skip_labels, csv_value(Map.get(section, "skip_labels")))
+    |> put_if_present(:require_description, boolean_value(Map.get(section, "require_description")))
+    |> put_if_present(:min_priority, positive_integer_value(Map.get(section, "min_priority")))
   end
 
   defp extract_codex_options(section) do

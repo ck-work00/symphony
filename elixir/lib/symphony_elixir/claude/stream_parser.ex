@@ -49,11 +49,17 @@ defmodule SymphonyElixir.Claude.StreamParser do
     output = integer_field(usage, ["output_tokens", :output_tokens])
     total = integer_field(usage, ["total_tokens", :total_tokens])
 
-    if input || output || total do
+    # Claude Code reports cache tokens separately; include them in the input total
+    # so token accounting reflects actual API usage.
+    cache_creation = integer_field(usage, ["cache_creation_input_tokens", :cache_creation_input_tokens])
+    cache_read = integer_field(usage, ["cache_read_input_tokens", :cache_read_input_tokens])
+    effective_input = (input || 0) + (cache_creation || 0) + (cache_read || 0)
+
+    if input || output || total || cache_creation || cache_read do
       %{
-        input_tokens: input || 0,
+        input_tokens: effective_input,
         output_tokens: output || 0,
-        total_tokens: total || (input || 0) + (output || 0)
+        total_tokens: total || effective_input + (output || 0)
       }
     end
   end
@@ -259,9 +265,10 @@ defmodule SymphonyElixir.Claude.StreamParser do
   def extract_pr_url(_event), do: nil
 
   defp extract_tool_result_text(event) do
-    # tool_use_result.stdout has the raw command output
-    tool_result = Map.get(event, "tool_use_result") || %{}
-    stdout = Map.get(tool_result, "stdout") || Map.get(tool_result, :stdout) || ""
+    # tool_use_result may be a map with "stdout" (Codex) or a list of content
+    # blocks (Claude Code: [%{"text" => "...", "type" => "text"}]).
+    tool_result = Map.get(event, "tool_use_result")
+    stdout = extract_stdout(tool_result)
 
     # Also check message.content[].content for tool_result blocks
     message = Map.get(event, "message") || Map.get(event, :message) || %{}
@@ -283,6 +290,21 @@ defmodule SymphonyElixir.Claude.StreamParser do
       {s, r} -> s <> "\n" <> r
     end
   end
+
+  defp extract_stdout(tool_result) when is_map(tool_result) do
+    Map.get(tool_result, "stdout") || Map.get(tool_result, :stdout) || ""
+  end
+
+  defp extract_stdout(tool_result) when is_list(tool_result) do
+    tool_result
+    |> Enum.flat_map(fn
+      %{"type" => "text", "text" => text} -> [text]
+      _ -> []
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp extract_stdout(_), do: ""
 
   @pr_url_regex ~r{https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+}
 

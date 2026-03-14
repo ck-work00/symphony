@@ -143,7 +143,12 @@ defmodule SymphonyElixir.Claude.CLI do
 
   defp handle_line(line, on_event, state) do
     # Strip trailing \r from PTY line discipline (script wrapper adds \r\n)
-    full_line = String.trim_trailing(state.buffer <> line, "\r")
+    # and leading control characters that macOS `script` may prepend (^D, ^H, etc.)
+    full_line =
+      (state.buffer <> line)
+      |> String.trim_trailing("\r")
+      |> strip_leading_control_chars()
+
     state = %{state | buffer: ""}
 
     case StreamParser.parse_line(full_line) do
@@ -310,6 +315,12 @@ defmodule SymphonyElixir.Claude.CLI do
         "exec script -qfec #{shell_escape(escaped_args)} /dev/null"
     end
   end
+
+  # macOS `script` may prepend control characters (^D=0x04, ^H=0x08, etc.)
+  # to the first line of output. Strip any non-printable bytes before the
+  # opening `{` so the JSON parser sees clean input.
+  defp strip_leading_control_chars(<<c, rest::binary>>) when c < 0x20, do: strip_leading_control_chars(rest)
+  defp strip_leading_control_chars(line), do: line
 
   defp shell_escape(str) do
     "'" <> String.replace(str, "'", "'\\''") <> "'"

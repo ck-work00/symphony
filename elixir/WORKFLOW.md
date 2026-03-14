@@ -1,7 +1,10 @@
 ---
 tracker:
   kind: linear
-  project_slug: "symphony-0c79b11b75ea"
+  filter:
+    labels:
+      include:
+        - symphony-agent
   active_states:
     - Todo
     - In Progress
@@ -26,8 +29,15 @@ hooks:
   before_remove: |
     cd elixir && mise exec -- mix workspace.before_remove
 agent:
+  backend: claude
   max_concurrent_agents: 10
   max_turns: 20
+claude:
+  command: claude
+  dangerously_skip_permissions: true
+  max_turns: 25
+  stall_timeout_ms: 600000
+  turn_timeout_ms: 3600000
 codex:
   command: codex --config shell_environment_policy.inherit=all --config model_reasoning_effort=xhigh --model gpt-5.3-codex app-server
   approval_policy: never

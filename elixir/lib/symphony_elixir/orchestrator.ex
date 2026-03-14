@@ -11,7 +11,8 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.Claude.StreamParser
   alias SymphonyElixir.Linear.Issue
 
-  @continuation_retry_delay_ms 1_000
+  @continuation_retry_delay_ms 30_000
+  @max_continuations 5
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
@@ -107,14 +108,27 @@ defmodule SymphonyElixir.Orchestrator do
         state =
           case reason do
             :normal ->
-              Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
+              continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
 
-              state
-              |> complete_issue(issue_id)
-              |> schedule_issue_retry(issue_id, 1, %{
-                identifier: running_entry.identifier,
-                delay_type: :continuation
-              })
+              if continuation_count > @max_continuations do
+                Logger.warning(
+                  "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching"
+                )
+
+                complete_issue(state, issue_id)
+              else
+                Logger.info(
+                  "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling continuation #{continuation_count}/#{@max_continuations}"
+                )
+
+                state
+                |> complete_issue(issue_id)
+                |> schedule_issue_retry(issue_id, continuation_count, %{
+                  identifier: running_entry.identifier,
+                  delay_type: :continuation,
+                  continuation_count: continuation_count
+                })
+              end
 
             _ ->
               Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
@@ -492,13 +506,15 @@ defmodule SymphonyElixir.Orchestrator do
          active_states,
          terminal_states
        ) do
-    candidate_issue?(issue, active_states, terminal_states) and
+    result = candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       suitable_issue?(issue) and
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running)
+
+    result
   end
 
   defp should_dispatch_issue?(_issue, _state, _active_states, _terminal_states), do: false
@@ -603,10 +619,10 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  defp dispatch_issue(%State{} = state, issue, attempt \\ nil) do
+  defp dispatch_issue(%State{} = state, issue, attempt \\ nil, metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt)
+        do_dispatch_issue(state, refreshed_issue, attempt, metadata)
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -621,9 +637,13 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.warning("Skipping dispatch; issue refresh failed for #{issue_context(issue)}: #{inspect(reason)}")
         state
     end
+  rescue
+    error ->
+      Logger.error("dispatch_issue crashed for #{issue_context(issue)}: #{Exception.message(error)}")
+      state
   end
 
-  defp do_dispatch_issue(%State{} = state, issue, attempt) do
+  defp do_dispatch_issue(%State{} = state, issue, attempt, metadata) do
     recipient = self()
 
     runner = Config.agent_runner_module()
@@ -666,6 +686,7 @@ defmodule SymphonyElixir.Orchestrator do
             phase: nil,
             pr_url: nil,
             retry_attempt: normalize_retry_attempt(attempt),
+            continuation_count: Map.get(metadata, :continuation_count, 0),
             started_at: now,
             history_run_id: history_run_id
           })
@@ -745,7 +766,8 @@ defmodule SymphonyElixir.Orchestrator do
             timer_ref: timer_ref,
             due_at_ms: due_at_ms,
             identifier: identifier,
-            error: error
+            error: error,
+            continuation_count: Map.get(metadata, :continuation_count, 0)
           })
     }
   end
@@ -755,7 +777,8 @@ defmodule SymphonyElixir.Orchestrator do
       %{attempt: attempt} = retry_entry ->
         metadata = %{
           identifier: Map.get(retry_entry, :identifier),
-          error: Map.get(retry_entry, :error)
+          error: Map.get(retry_entry, :error),
+          continuation_count: Map.get(retry_entry, :continuation_count, 0)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -840,7 +863,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
          dispatch_slots_available?(issue, state) do
-      {:noreply, dispatch_issue(state, issue, attempt)}
+      {:noreply, dispatch_issue(state, issue, attempt, metadata)}
     else
       Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
 
@@ -862,8 +885,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
-      @continuation_retry_delay_ms
+    if metadata[:delay_type] == :continuation do
+      # Exponential backoff: 30s, 60s, 120s, 240s, ...
+      min(@continuation_retry_delay_ms * (1 <<< (attempt - 1)), Config.max_retry_backoff_ms())
     else
       failure_retry_delay(attempt)
     end
@@ -1407,6 +1431,7 @@ defmodule SymphonyElixir.Orchestrator do
 
     Enum.find_value(payloads, &absolute_token_usage_from_payload/1) ||
       Enum.find_value(payloads, &turn_completed_usage_from_payload/1) ||
+      Enum.find_value(payloads, &flat_token_usage/1) ||
       %{}
   end
 
@@ -1451,6 +1476,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp turn_completed_usage_from_payload(_payload), do: nil
+
+  # Recognizes a flat usage map like %{input_tokens: N, output_tokens: N, total_tokens: N}
+  # produced by Claude Code's StreamParser.extract_usage/1.
+  defp flat_token_usage(payload) when is_map(payload) do
+    if integer_token_map?(payload), do: payload
+  end
+
+  defp flat_token_usage(_), do: nil
 
   defp rate_limits_from_payload(payload) when is_map(payload) do
     direct = Map.get(payload, "rate_limits") || Map.get(payload, :rate_limits)

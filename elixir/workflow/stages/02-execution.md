@@ -20,17 +20,31 @@ SYMPHONY_PHASE: Test
 4. Run the full test suite: `direnv exec . mix test`
 5. All new and existing tests must pass. Fix failures before proceeding.
 
-### Browser testing (required — do NOT skip this)
+### Browser testing (MANDATORY — do NOT skip)
 
-You MUST verify your changes in a real browser using Playwright MCP tools. The backend and frontend are already running on the ports from `.symphony_slot`.
+You MUST open a browser and verify your changes visually. You have Playwright MCP tools available — use them.
 
-1. Source the slot info: `source .symphony_slot` (or read PHOENIX_PORT/FRONTEND_PORT from it)
-2. Navigate to the relevant page: `mcp__plugin_playwright__browser_navigate` to `http://localhost:$FRONTEND_PORT/...`
-3. Exercise the flow that the issue describes — interact with the UI as a user would
-4. Verify the expected behavior works correctly
-5. Take screenshots at each key step: `mcp__plugin_playwright__browser_take_screenshot`
-6. Save screenshots — you MUST upload them to the Linear issue in the next step
+Source the port numbers first:
+```bash
+cat .symphony_slot  # or source it
+```
 
-If the issue involves UI changes, you must visually confirm the fix. If it's a pure backend/API change, at minimum verify the API endpoint works via browser or curl.
+Then follow these exact steps:
 
-**Do NOT proceed to Step 4 (Share Evidence) without browser screenshots.**
+1. **Navigate** to the relevant page in the frontend (use the FRONTEND_PORT from .symphony_slot):
+   - Use the `browser_navigate` Playwright tool with URL `http://localhost:<FRONTEND_PORT>/...`
+   - Log in if needed using test credentials from the CLAUDE.md
+
+2. **Interact** with the UI to exercise the flow described in the issue:
+   - Click buttons, fill forms, navigate between pages
+   - Use `browser_click`, `browser_fill_form`, `browser_snapshot` tools
+
+3. **Verify** the fix works — check that the expected behavior matches what you see
+
+4. **Take screenshots** at key moments (before/after the fix, the final state):
+   - Use the `browser_take_screenshot` Playwright tool
+   - Save each screenshot with a descriptive filename
+
+You will upload these screenshots to the Linear issue in the next step.
+
+**If you skip browser testing, the work is not complete. Do NOT move to Step 4 without screenshots.**

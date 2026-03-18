@@ -653,7 +653,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        do_dispatch_issue(state, refreshed_issue, attempt, metadata)
+        case check_existing_pr(refreshed_issue) do
+          {:pr_exists, pr_url} ->
+            Logger.info("Skipping dispatch; open PR already exists for #{issue_context(refreshed_issue)}: #{pr_url}")
+            complete_issue(state, refreshed_issue.id)
+
+          :no_pr ->
+            do_dispatch_issue(state, refreshed_issue, attempt, metadata)
+        end
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -1814,6 +1821,54 @@ defmodule SymphonyElixir.Orchestrator do
   # ---------------------------------------------------------------------------
   # Phase-aware stall detection
   # ---------------------------------------------------------------------------
+
+  # ---------------------------------------------------------------------------
+  # Pre-dispatch PR check
+  # ---------------------------------------------------------------------------
+
+  defp check_existing_pr(%Issue{identifier: identifier, labels: labels}) when is_binary(identifier) do
+    repos = repos_for_labels(labels)
+    branches = [identifier, String.downcase(identifier)]
+
+    result =
+      Enum.find_value(repos, fn repo ->
+        Enum.find_value(branches, fn branch ->
+          case System.cmd("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"],
+                 stderr_to_stdout: true
+               ) do
+            {url, 0} ->
+              trimmed = String.trim(url)
+              if trimmed != "" and String.starts_with?(trimmed, "http"), do: trimmed
+
+            _ ->
+              nil
+          end
+        end)
+      end)
+
+    case result do
+      nil -> :no_pr
+      url -> {:pr_exists, url}
+    end
+  rescue
+    _ -> :no_pr
+  end
+
+  defp check_existing_pr(_issue), do: :no_pr
+
+  defp repos_for_labels(labels) when is_list(labels) do
+    has_platform = Enum.any?(labels, fn l -> String.downcase(l) |> String.starts_with?("2.0") end)
+    has_procurement = Enum.any?(labels, fn l -> String.downcase(l) |> String.starts_with?("3.0") end)
+
+    cond do
+      has_platform and has_procurement -> ["GearFlowDev/gf_platform", "GearFlowDev/gf_procurement"]
+      has_platform -> ["GearFlowDev/gf_platform"]
+      has_procurement -> ["GearFlowDev/gf_procurement"]
+      true -> ["GearFlowDev/gf_platform", "GearFlowDev/gf_procurement"]
+    end
+  end
+
+  defp repos_for_labels(_), do: ["GearFlowDev/gf_platform", "GearFlowDev/gf_procurement"]
 
   defp phase_stall_elapsed_ms(running_entry, now) do
     case Map.get(running_entry, :phase_changed_at) do

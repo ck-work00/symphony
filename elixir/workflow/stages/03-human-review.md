@@ -12,7 +12,7 @@ For each screenshot you captured in Step 3, upload it to Linear:
 # Step 1: Get upload URL from Linear
 FILESIZE=$(wc -c < screenshot.png | tr -d ' ')
 UPLOAD_RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: Bearer $LINEAR_API_KEY" \
+  -H "Authorization: Bearer $LINEAR_API_KEY_AUTOMATION" \
   -H "Content-Type: application/json" \
   -d "{\"query\": \"mutation { fileUpload(contentType: \\\"image/png\\\", filename: \\\"screenshot.png\\\", size: $FILESIZE) { success uploadFile { uploadUrl assetUrl } } }\"}")
 
@@ -39,7 +39,7 @@ Post a comment on the Linear issue with your test summary and embedded screensho
 
 ```bash
 curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: Bearer $LINEAR_API_KEY" \
+  -H "Authorization: Bearer $LINEAR_API_KEY_AUTOMATION" \
   -H "Content-Type: application/json" \
   -d '{
     "query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }",

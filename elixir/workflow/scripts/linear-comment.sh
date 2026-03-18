@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Post a comment to a Linear issue.
 # Usage: linear-comment.sh <body>
-# Requires: $LINEAR_API_KEY, $ISSUE_ID
+# Requires: $LINEAR_API_KEY_AUTOMATION, $ISSUE_ID
 
 set -euo pipefail
 
 BODY="${1:?Usage: linear-comment.sh <body>}"
 
-if [[ -z "${LINEAR_API_KEY:-}" ]]; then
-  echo "ERROR: LINEAR_API_KEY not set" >&2
+if [[ -z "${LINEAR_API_KEY_AUTOMATION:-}" ]]; then
+  echo "ERROR: LINEAR_API_KEY_AUTOMATION not set" >&2
   exit 1
 fi
 
@@ -22,5 +22,5 @@ ESCAPED_BODY=$(echo "$BODY" | python3 -c 'import json,sys; print(json.dumps(sys.
 
 curl -s -X POST https://api.linear.app/graphql \
   -H "Content-Type: application/json" \
-  -H "Authorization: ${LINEAR_API_KEY}" \
+  -H "Authorization: ${LINEAR_API_KEY_AUTOMATION}" \
   -d "{\"query\":\"mutation { commentCreate(input: { issueId: \\\"${ISSUE_ID}\\\", body: ${ESCAPED_BODY} }) { success } }\"}"

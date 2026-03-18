@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Upload a screenshot to Linear and return the asset URL.
 # Usage: linear-upload-screenshot.sh <file-path>
-# Requires: $LINEAR_API_KEY, $ISSUE_ID
+# Requires: $LINEAR_API_KEY_AUTOMATION, $ISSUE_ID
 # Returns: asset URL on stdout
 
 set -euo pipefail
 
 FILE="${1:?Usage: linear-upload-screenshot.sh <file-path>}"
 
-if [[ -z "${LINEAR_API_KEY:-}" ]]; then
-  echo "ERROR: LINEAR_API_KEY not set" >&2
+if [[ -z "${LINEAR_API_KEY_AUTOMATION:-}" ]]; then
+  echo "ERROR: LINEAR_API_KEY_AUTOMATION not set" >&2
   exit 1
 fi
 
@@ -30,7 +30,7 @@ FILE_SIZE=$(wc -c < "$FILE" | tr -d ' ')
 # Step 1: Request upload URL from Linear
 UPLOAD_RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
   -H "Content-Type: application/json" \
-  -H "Authorization: ${LINEAR_API_KEY}" \
+  -H "Authorization: ${LINEAR_API_KEY_AUTOMATION}" \
   -d "{\"query\":\"mutation { fileUpload(contentType: \\\"${CONTENT_TYPE}\\\", filename: \\\"${FILENAME}\\\", size: ${FILE_SIZE}) { success uploadFile { uploadUrl assetUrl } } }\"}")
 
 UPLOAD_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['data']['fileUpload']['uploadFile']['uploadUrl'])" 2>/dev/null)

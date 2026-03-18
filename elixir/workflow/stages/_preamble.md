@@ -65,7 +65,7 @@ Valid phases: Investigate, Implement, Test, Ship, Share Evidence
 ## Environment Notes
 
 - The `.env` file in the working directory has all credentials.
-- `$LINEAR_API_KEY` is available in the environment for Linear API calls.
+- `$LINEAR_API_KEY_AUTOMATION` is available in the environment for Linear API calls.
 
 {% if attempt %}
 ## Continuation

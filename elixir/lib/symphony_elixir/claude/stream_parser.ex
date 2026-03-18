@@ -306,6 +306,38 @@ defmodule SymphonyElixir.Claude.StreamParser do
 
   defp extract_stdout(_), do: ""
 
+  # ---------------------------------------------------------------------------
+  # Screenshot URL extraction
+  # ---------------------------------------------------------------------------
+
+  @linear_asset_url_regex ~r{https://uploads\.linear\.app/[^\s"'<>]+}
+
+  @doc """
+  Extract Linear asset URLs from tool results (screenshot uploads).
+  Also detects Playwright screenshot tool uses.
+  """
+  @spec extract_screenshot_urls(map()) :: [String.t()]
+  def extract_screenshot_urls(%{event_type: :tool_result} = event) do
+    text = extract_tool_result_text(event)
+
+    @linear_asset_url_regex
+    |> Regex.scan(text)
+    |> Enum.map(fn [url] -> url end)
+  end
+
+  def extract_screenshot_urls(%{event_type: :tool_use} = event) do
+    tool_uses = extract_tool_uses(event)
+
+    has_screenshot =
+      Enum.any?(tool_uses, fn {name, _input} ->
+        String.contains?(name, "browser_take_screenshot")
+      end)
+
+    if has_screenshot, do: ["screenshot_pending"], else: []
+  end
+
+  def extract_screenshot_urls(_event), do: []
+
   @pr_url_regex ~r{https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/pull/\d+}
 
   defp detect_pr_url(""), do: nil

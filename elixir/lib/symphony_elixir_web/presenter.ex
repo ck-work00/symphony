@@ -102,6 +102,8 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       phase: Map.get(entry, :phase),
       pr_url: Map.get(entry, :pr_url),
+      screenshot_urls: Map.get(entry, :screenshot_urls, []),
+      history_run_id: Map.get(entry, :history_run_id),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,

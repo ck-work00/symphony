@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Workflow do
   """
 
   alias SymphonyElixir.WorkflowStore
+  alias SymphonyElixir.Workflow.StageLoader
 
   @workflow_file_name "WORKFLOW.md"
 
@@ -67,11 +68,27 @@ defmodule SymphonyElixir.Workflow do
       {:ok, front_matter} ->
         prompt = Enum.join(prompt_lines, "\n") |> String.trim()
 
+        # Check for staged workflow directory relative to workflow file
+        stages_dir = stages_directory()
+
+        prompt_template =
+          if File.dir?(stages_dir) do
+            stages = StageLoader.load_stages(stages_dir)
+
+            if map_size(stages) > 0 do
+              StageLoader.assemble_prompt(stages)
+            else
+              prompt
+            end
+          else
+            prompt
+          end
+
         {:ok,
          %{
            config: front_matter,
            prompt: prompt,
-           prompt_template: prompt
+           prompt_template: prompt_template
          }}
 
       {:error, :workflow_front_matter_not_a_map} ->
@@ -80,6 +97,16 @@ defmodule SymphonyElixir.Workflow do
       {:error, reason} ->
         {:error, {:workflow_parse_error, reason}}
     end
+  end
+
+  @doc """
+  Returns the path to the stages directory, relative to the workflow file.
+  """
+  @spec stages_directory() :: Path.t()
+  def stages_directory do
+    workflow_file_path()
+    |> Path.dirname()
+    |> Path.join("workflow/stages")
   end
 
   defp split_front_matter(content) do

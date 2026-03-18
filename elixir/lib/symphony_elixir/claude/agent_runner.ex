@@ -108,7 +108,8 @@ defmodule SymphonyElixir.Claude.AgentRunner do
       1,
       max_turns,
       _session_id = nil,
-      _comments_after = DateTime.utc_now()
+      _comments_after = DateTime.utc_now(),
+      _no_progress_count = 0
     )
   end
 
@@ -122,7 +123,8 @@ defmodule SymphonyElixir.Claude.AgentRunner do
          turn_number,
          max_turns,
          session_id,
-         comments_after
+         comments_after,
+         no_progress_count
        ) do
     comments = fetch_new_comments(issue, comment_fetcher, turn_number, comments_after)
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns, comments)
@@ -146,49 +148,64 @@ defmodule SymphonyElixir.Claude.AgentRunner do
         effective_session_id = new_session_id || session_id
         task_complete = Map.get(cli_result, :task_complete, false)
 
+        # Check workspace progress after each turn
+        progress = check_turn_progress(workspace)
+        made_progress = progress.files_changed > 0 or progress.new_commits > 0 or task_complete
+        next_no_progress = if made_progress, do: 0, else: no_progress_count + 1
+
         Logger.info(
-          "Completed Claude agent turn for #{issue_context(issue)} session_id=#{effective_session_id} workspace=#{workspace} turn=#{turn_number}/#{max_turns} task_complete=#{task_complete}"
+          "Completed Claude agent turn for #{issue_context(issue)} session_id=#{effective_session_id} workspace=#{workspace} turn=#{turn_number}/#{max_turns} task_complete=#{task_complete} progress=#{inspect(progress)} no_progress_count=#{next_no_progress}"
         )
 
-        if task_complete do
-          Logger.info(
-            "Agent signaled SYMPHONY_TASK_COMPLETE for #{issue_context(issue)}, stopping"
-          )
+        cond do
+          task_complete ->
+            Logger.info(
+              "Agent signaled SYMPHONY_TASK_COMPLETE for #{issue_context(issue)}, stopping"
+            )
 
-          :ok
-        else
-          case continue_with_issue?(issue, issue_state_fetcher) do
-            {:continue, refreshed_issue} when turn_number < max_turns ->
-              Logger.info(
-                "Continuing Claude agent run for #{issue_context(refreshed_issue)} turn=#{turn_number}/#{max_turns}"
-              )
+            :ok
 
-              do_run_claude_turns(
-                workspace,
-                refreshed_issue,
-                claude_update_recipient,
-                opts,
-                issue_state_fetcher,
-                comment_fetcher,
-                turn_number + 1,
-                max_turns,
-                effective_session_id,
-                turn_started_at
-              )
+          next_no_progress >= 2 ->
+            Logger.warning(
+              "No progress for #{next_no_progress} consecutive turns for #{issue_context(issue)}, stopping early"
+            )
 
-            {:continue, refreshed_issue} ->
-              Logger.info(
-                "Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active"
-              )
+            :ok
 
-              :ok
+          true ->
+            case continue_with_issue?(issue, issue_state_fetcher) do
+              {:continue, refreshed_issue} when turn_number < max_turns ->
+                Logger.info(
+                  "Continuing Claude agent run for #{issue_context(refreshed_issue)} turn=#{turn_number}/#{max_turns}"
+                )
 
-            {:done, _refreshed_issue} ->
-              :ok
+                do_run_claude_turns(
+                  workspace,
+                  refreshed_issue,
+                  claude_update_recipient,
+                  opts,
+                  issue_state_fetcher,
+                  comment_fetcher,
+                  turn_number + 1,
+                  max_turns,
+                  effective_session_id,
+                  turn_started_at,
+                  next_no_progress
+                )
 
-            {:error, reason} ->
-              {:error, reason}
-          end
+              {:continue, refreshed_issue} ->
+                Logger.info(
+                  "Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active"
+                )
+
+                :ok
+
+              {:done, _refreshed_issue} ->
+                :ok
+
+              {:error, reason} ->
+                {:error, reason}
+            end
         end
 
       {:error, reason} ->
@@ -200,32 +217,8 @@ defmodule SymphonyElixir.Claude.AgentRunner do
     PromptBuilder.build_prompt(issue, opts)
   end
 
-  defp build_turn_prompt(_issue, _opts, turn_number, max_turns, comments) do
-    comments_section = format_comments_section(comments)
-
-    """
-    Continuation guidance (turn #{turn_number}/#{max_turns}):
-
-    The previous turn completed normally, but the Linear issue is still in an active state.
-    Resume from the current workspace state — do not restart from scratch.
-    #{comments_section}
-    FIRST, check if a PR already exists for this branch:
-      gh pr list --head "$(git branch --show-current)" --json number,url,state --jq '.[0]'
-
-    If a PR exists:
-    1. Check CI status: `gh pr checks <number>`
-    2. If CI is green (or still running) and no unaddressed review comments — you are DONE.
-    3. If CI failed, fix the issue, push, then you are DONE.
-    4. If there are review comments, address them, push, then you are DONE.
-
-    If no PR exists, continue working toward shipping one.
-
-    CRITICAL: When you are done, output this marker on its own line and STOP:
-    SYMPHONY_TASK_COMPLETE
-
-    Do NOT re-run tests or post additional test reports if the PR is already open and CI is passing.
-    Do NOT look for more work. Do NOT expand scope.
-    """
+  defp build_turn_prompt(issue, _opts, turn_number, max_turns, comments) do
+    PromptBuilder.build_continuation_prompt(issue, turn_number, max_turns, comments)
   end
 
   defp fetch_new_comments(_issue, _comment_fetcher, 1, _comments_after), do: []
@@ -239,25 +232,6 @@ defmodule SymphonyElixir.Claude.AgentRunner do
   end
 
   defp fetch_new_comments(_issue, _comment_fetcher, _turn, _comments_after), do: []
-
-  defp format_comments_section([]), do: ""
-
-  defp format_comments_section(comments) do
-    formatted =
-      comments
-      |> Enum.map(fn c ->
-        time = if c.created_at, do: Calendar.strftime(c.created_at, "%H:%M UTC"), else: "?"
-        "  [#{time}] #{c.author}: #{c.body}"
-      end)
-      |> Enum.join("\n")
-
-    """
-
-    ## New comments on the Linear issue (from your team — read carefully and follow any instructions):
-    #{formatted}
-
-    """
-  end
 
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher)
        when is_binary(issue_id) do
@@ -296,5 +270,34 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
   defp issue_context(%Issue{id: issue_id, identifier: identifier}) do
     "issue_id=#{issue_id} issue_identifier=#{identifier}"
+  end
+
+  defp check_turn_progress(workspace) do
+    files_changed = count_git_changes(workspace)
+    new_commits = count_new_commits(workspace)
+    %{files_changed: files_changed, new_commits: new_commits}
+  end
+
+  defp count_git_changes(workspace) do
+    case System.cmd("git", ["diff", "--stat", "HEAD"], cd: workspace, stderr_to_stdout: true) do
+      {output, 0} ->
+        output |> String.split("\n", trim: true) |> length()
+
+      _ ->
+        0
+    end
+  end
+
+  defp count_new_commits(workspace) do
+    case System.cmd("git", ["log", "--oneline", "@{upstream}..HEAD"],
+           cd: workspace,
+           stderr_to_stdout: true
+         ) do
+      {output, 0} ->
+        output |> String.split("\n", trim: true) |> length()
+
+      _ ->
+        0
+    end
   end
 end

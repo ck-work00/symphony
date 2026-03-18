@@ -7,13 +7,14 @@ defmodule SymphonyElixir.WorkflowStore do
   require Logger
 
   alias SymphonyElixir.Workflow
+  alias SymphonyElixir.Workflow.StageLoader
 
   @poll_interval_ms 1_000
 
   defmodule State do
     @moduledoc false
 
-    defstruct [:path, :stamp, :workflow]
+    defstruct [:path, :stamp, :stages_stamp, :workflow]
   end
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -117,7 +118,11 @@ defmodule SymphonyElixir.WorkflowStore do
   defp reload_current_path(path, state) do
     case current_stamp(path) do
       {:ok, stamp} when stamp == state.stamp ->
-        {:ok, state}
+        # Also check stages directory for changes
+        case stages_stamp_changed?(state) do
+          true -> reload_path(path, state)
+          false -> {:ok, state}
+        end
 
       {:ok, _stamp} ->
         reload_path(path, state)
@@ -131,7 +136,8 @@ defmodule SymphonyElixir.WorkflowStore do
   defp load_state(path) do
     with {:ok, workflow} <- Workflow.load(path),
          {:ok, stamp} <- current_stamp(path) do
-      {:ok, %State{path: path, stamp: stamp, workflow: workflow}}
+      stages_stamp = current_stages_stamp()
+      {:ok, %State{path: path, stamp: stamp, stages_stamp: stages_stamp, workflow: workflow}}
     else
       {:error, reason} ->
         {:error, reason}
@@ -149,5 +155,19 @@ defmodule SymphonyElixir.WorkflowStore do
 
   defp log_reload_error(path, reason) do
     Logger.error("Failed to reload workflow path=#{path} reason=#{inspect(reason)}; keeping last known good configuration")
+  end
+
+  defp current_stages_stamp do
+    stages_dir = Workflow.stages_directory()
+
+    case StageLoader.directory_stamp(stages_dir) do
+      {:ok, stamp} -> stamp
+      {:error, _} -> nil
+    end
+  end
+
+  defp stages_stamp_changed?(state) do
+    current = current_stages_stamp()
+    current != state.stages_stamp and current != nil
   end
 end

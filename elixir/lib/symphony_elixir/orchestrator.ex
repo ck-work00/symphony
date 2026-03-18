@@ -159,6 +159,9 @@ defmodule SymphonyElixir.Orchestrator do
       running_entry ->
         {updated_running_entry, token_delta} = integrate_codex_update(running_entry, update)
 
+        # Record phase transition events
+        record_phase_transition_events(running_entry, updated_running_entry, issue_id)
+
         state =
           state
           |> apply_codex_token_delta(token_delta)
@@ -415,12 +418,26 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp restart_stalled_issue(state, issue_id, running_entry, now, timeout_ms) do
     elapsed_ms = stall_elapsed_ms(running_entry, now)
+    phase_elapsed_ms = phase_stall_elapsed_ms(running_entry, now)
+    phase_timeout_ms = timeout_ms * 2
 
-    if is_integer(elapsed_ms) and elapsed_ms > timeout_ms do
+    stall_reason =
+      cond do
+        is_integer(elapsed_ms) and elapsed_ms > timeout_ms ->
+          "stalled for #{elapsed_ms}ms without codex activity"
+
+        is_integer(phase_elapsed_ms) and phase_elapsed_ms > phase_timeout_ms ->
+          "phase stuck for #{phase_elapsed_ms}ms (phase=#{Map.get(running_entry, :phase)})"
+
+        true ->
+          nil
+      end
+
+    if stall_reason do
       identifier = Map.get(running_entry, :identifier, issue_id)
       session_id = running_entry_session_id(running_entry)
 
-      Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id} elapsed_ms=#{elapsed_ms}; restarting with backoff")
+      Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; #{stall_reason}; restarting with backoff")
 
       next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -428,7 +445,7 @@ defmodule SymphonyElixir.Orchestrator do
       |> terminate_running_issue(issue_id, false)
       |> schedule_issue_retry(issue_id, next_attempt, %{
         identifier: identifier,
-        error: "stalled for #{elapsed_ms}ms without codex activity"
+        error: stall_reason
       })
     else
       state
@@ -688,6 +705,8 @@ defmodule SymphonyElixir.Orchestrator do
             retry_attempt: normalize_retry_attempt(attempt),
             continuation_count: Map.get(metadata, :continuation_count, 0),
             started_at: now,
+            phase_changed_at: now,
+            screenshot_urls: [],
             history_run_id: history_run_id
           })
 
@@ -742,6 +761,28 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
+
+    # Enforce max failure retries (does not apply to continuations)
+    if metadata[:delay_type] != :continuation and next_attempt > Config.max_failure_retries() do
+      exhaust_failure_retries(state, issue_id, previous_retry, next_attempt, metadata)
+    else
+      do_schedule_issue_retry(state, issue_id, next_attempt, previous_retry, metadata)
+    end
+  end
+
+  defp exhaust_failure_retries(state, issue_id, previous_retry, next_attempt, metadata) do
+    identifier = metadata[:identifier] || Map.get(previous_retry, :identifier) || issue_id
+
+    Logger.warning(
+      "Max failure retries (#{Config.max_failure_retries()}) exhausted for issue_id=#{issue_id} issue_identifier=#{identifier}; stopping"
+    )
+
+    state = complete_issue(state, issue_id)
+    record_max_retries_event(state, issue_id, identifier, next_attempt)
+    state
+  end
+
+  defp do_schedule_issue_retry(%State{} = state, issue_id, next_attempt, previous_retry, metadata) do
     delay_ms = retry_delay(next_attempt, metadata)
     old_timer = Map.get(previous_retry, :timer_ref)
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
@@ -1004,7 +1045,10 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
           phase: Map.get(metadata, :phase),
+          phase_changed_at: Map.get(metadata, :phase_changed_at),
           pr_url: Map.get(metadata, :pr_url),
+          screenshot_urls: Map.get(metadata, :screenshot_urls, []),
+          history_run_id: Map.get(metadata, :history_run_id),
           runtime_seconds: running_seconds(metadata.started_at, now)
         }
       end)
@@ -1054,6 +1098,63 @@ defmodule SymphonyElixir.Orchestrator do
      }, state}
   end
 
+  def handle_call({:stop_issue, issue_id}, _from, state) do
+    case Map.get(state.running, issue_id) do
+      nil ->
+        {:reply, {:error, :not_running}, state}
+
+      running_entry ->
+        Logger.warning("Stopping issue via dashboard action: issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}")
+
+        state =
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> record_completed_history(running_entry, {:shutdown, :stopped})
+          |> record_session_completion_totals(running_entry)
+          |> complete_issue(issue_id)
+
+        notify_dashboard()
+        {:reply, :ok, state}
+    end
+  end
+
+  def handle_call({:retry_issue_manual, issue_id}, _from, state) do
+    case Tracker.fetch_issue_states_by_ids([issue_id]) do
+      {:ok, [%Issue{} = issue | _]} ->
+        Logger.info("Manual retry via dashboard action: #{issue_context(issue)}")
+        state = dispatch_issue(state, issue)
+        notify_dashboard()
+        {:reply, :ok, state}
+
+      {:ok, []} ->
+        {:reply, {:error, :not_found}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call({:cancel_retry, issue_id}, _from, state) do
+    case Map.get(state.retry_attempts, issue_id) do
+      nil ->
+        {:reply, {:error, :not_found}, state}
+
+      %{timer_ref: timer_ref} ->
+        if is_reference(timer_ref), do: Process.cancel_timer(timer_ref)
+
+        Logger.info("Cancelled retry via dashboard action: issue_id=#{issue_id}")
+
+        state = %{
+          state
+          | retry_attempts: Map.delete(state.retry_attempts, issue_id),
+            claimed: MapSet.delete(state.claimed, issue_id)
+        }
+
+        notify_dashboard()
+        {:reply, :ok, state}
+    end
+  end
+
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do
     token_delta = extract_token_delta(running_entry, update)
     codex_input_tokens = Map.get(running_entry, :codex_input_tokens, 0)
@@ -1066,8 +1167,21 @@ defmodule SymphonyElixir.Orchestrator do
     turn_count = Map.get(running_entry, :turn_count, 0)
 
     # Detect phase and PR URL from agent messages (sticky — only updates when found)
+    old_phase = Map.get(running_entry, :phase)
     phase = phase_for_update(running_entry, update)
     pr_url = pr_url_for_update(running_entry, update)
+    _old_pr_url = Map.get(running_entry, :pr_url)
+
+    # Track screenshot URLs from Playwright tool uses
+    screenshot_urls = screenshot_urls_for_update(running_entry, update)
+
+    # Update phase_changed_at when phase transitions
+    phase_changed_at =
+      if phase != old_phase and phase != nil do
+        timestamp
+      else
+        Map.get(running_entry, :phase_changed_at, timestamp)
+      end
 
     {
       Map.merge(running_entry, %{
@@ -1076,7 +1190,9 @@ defmodule SymphonyElixir.Orchestrator do
         session_id: session_id_for_update(running_entry.session_id, update),
         last_codex_event: event,
         phase: phase,
+        phase_changed_at: phase_changed_at,
         pr_url: pr_url,
+        screenshot_urls: screenshot_urls,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
         codex_output_tokens: codex_output_tokens + token_delta.output_tokens,
@@ -1295,11 +1411,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp categorize_error(:normal), do: %{message: nil, category: nil}
 
+  defp categorize_error({:shutdown, :stopped}),
+    do: %{message: "stopped via dashboard", category: "stopped"}
+
   defp categorize_error(reason) do
     message = inspect(reason)
 
     category =
       cond do
+        message =~ "max_retries_exhausted" -> "max_retries_exhausted"
         message =~ "timeout" or message =~ "Timeout" -> "timeout"
         message =~ "stall" or message =~ "Stall" -> "stall"
         message =~ "rate_limit" or message =~ "429" -> "rate_limit"
@@ -1676,4 +1796,158 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp integer_like(_value), do: nil
+
+  # ---------------------------------------------------------------------------
+  # Phase-aware stall detection
+  # ---------------------------------------------------------------------------
+
+  defp phase_stall_elapsed_ms(running_entry, now) do
+    case Map.get(running_entry, :phase_changed_at) do
+      %DateTime{} = timestamp ->
+        max(0, DateTime.diff(now, timestamp, :millisecond))
+
+      _ ->
+        nil
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Screenshot URL tracking
+  # ---------------------------------------------------------------------------
+
+  defp screenshot_urls_for_update(running_entry, %{raw: raw}) when is_map(raw) do
+    existing = Map.get(running_entry, :screenshot_urls, [])
+    new_urls = StreamParser.extract_screenshot_urls(raw)
+
+    case new_urls do
+      [] -> existing
+      urls -> Enum.uniq(existing ++ urls)
+    end
+  end
+
+  defp screenshot_urls_for_update(running_entry, _update),
+    do: Map.get(running_entry, :screenshot_urls, [])
+
+  # ---------------------------------------------------------------------------
+  # Phase transition event recording
+  # ---------------------------------------------------------------------------
+
+  defp record_phase_transition_events(old_entry, new_entry, issue_id) do
+    run_id = Map.get(new_entry, :history_run_id)
+    unless run_id, do: throw(:skip)
+
+    old_phase = Map.get(old_entry, :phase)
+    new_phase = Map.get(new_entry, :phase)
+    old_pr_url = Map.get(old_entry, :pr_url)
+    new_pr_url = Map.get(new_entry, :pr_url)
+    old_screenshots = Map.get(old_entry, :screenshot_urls, [])
+    new_screenshots = Map.get(new_entry, :screenshot_urls, [])
+
+    now = DateTime.utc_now()
+
+    # Phase change event
+    if new_phase != old_phase and new_phase != nil do
+      History.record_event(%{
+        run_id: run_id,
+        event_type: "phase_change",
+        payload: %{from: old_phase, to: new_phase},
+        timestamp: now
+      })
+
+      # Milestone events (deduplicated via phase check)
+      record_milestone_event(run_id, old_phase, new_phase, now)
+    end
+
+    # PR created milestone
+    if new_pr_url != nil and old_pr_url == nil do
+      History.record_event(%{
+        run_id: run_id,
+        event_type: "milestone_pr_created",
+        payload: %{pr_url: new_pr_url},
+        timestamp: now
+      })
+    end
+
+    # Screenshot captured
+    if length(new_screenshots) > length(old_screenshots) do
+      new_urls = new_screenshots -- old_screenshots
+
+      Enum.each(new_urls, fn url ->
+        History.record_event(%{
+          run_id: run_id,
+          event_type: "screenshot_captured",
+          payload: %{url: url, issue_id: issue_id},
+          timestamp: now
+        })
+      end)
+    end
+
+    :ok
+  catch
+    :skip -> :ok
+  end
+
+  defp record_milestone_event(run_id, old_phase, new_phase, now) do
+    normalized_new = new_phase && String.downcase(new_phase)
+    normalized_old = old_phase && String.downcase(old_phase)
+
+    cond do
+      normalized_new && String.contains?(normalized_new, "implement") and
+          (normalized_old == nil or not String.contains?(normalized_old, "implement")) ->
+        History.record_event(%{
+          run_id: run_id,
+          event_type: "milestone_first_edit",
+          payload: %{phase: new_phase},
+          timestamp: now
+        })
+
+      normalized_new && String.contains?(normalized_new, "test") and
+          (normalized_old == nil or not String.contains?(normalized_old, "test")) ->
+        History.record_event(%{
+          run_id: run_id,
+          event_type: "milestone_tests_run",
+          payload: %{phase: new_phase},
+          timestamp: now
+        })
+
+      true ->
+        :ok
+    end
+  end
+
+  defp record_max_retries_event(_state, issue_id, identifier, attempt) do
+    Logger.info(
+      "Recording max_retries_exhausted for issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{attempt}"
+    )
+
+    :ok
+  end
+
+  # ---------------------------------------------------------------------------
+  # GenServer actions: stop, retry, cancel
+  # ---------------------------------------------------------------------------
+
+  @spec stop_issue(String.t()) :: :ok | {:error, :not_running}
+  def stop_issue(issue_id), do: stop_issue(__MODULE__, issue_id)
+
+  @spec stop_issue(GenServer.server(), String.t()) :: :ok | {:error, :not_running}
+  def stop_issue(server, issue_id) do
+    GenServer.call(server, {:stop_issue, issue_id})
+  end
+
+  @spec retry_issue_manual(String.t()) :: :ok | {:error, :not_found}
+  def retry_issue_manual(issue_id), do: retry_issue_manual(__MODULE__, issue_id)
+
+  @spec retry_issue_manual(GenServer.server(), String.t()) :: :ok | {:error, :not_found}
+  def retry_issue_manual(server, issue_id) do
+    GenServer.call(server, {:retry_issue_manual, issue_id})
+  end
+
+  @spec cancel_retry(String.t()) :: :ok | {:error, :not_found}
+  def cancel_retry(issue_id), do: cancel_retry(__MODULE__, issue_id)
+
+  @spec cancel_retry(GenServer.server(), String.t()) :: :ok | {:error, :not_found}
+  def cancel_retry(server, issue_id) do
+    GenServer.call(server, {:cancel_retry, issue_id})
+  end
 end

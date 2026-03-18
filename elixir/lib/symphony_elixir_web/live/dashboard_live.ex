@@ -5,9 +5,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
-  alias SymphonyElixir.History
+  alias SymphonyElixir.{History, Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
+  @phase_order ["Investigate", "Implement", "Test", "Ship", "Share Evidence"]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -18,6 +19,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:active_tab, "live")
       |> assign(:history_runs, [])
       |> assign(:metrics, nil)
+      |> assign(:expanded_timelines, MapSet.new())
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -39,6 +41,34 @@ defmodule SymphonyElixirWeb.DashboardLive do
       end
 
     {:noreply, socket}
+  end
+
+  def handle_event("stop_issue", %{"issue-id" => issue_id}, socket) do
+    Orchestrator.stop_issue(orchestrator(), issue_id)
+    {:noreply, assign(socket, :payload, load_payload())}
+  end
+
+  def handle_event("retry_issue", %{"issue-id" => issue_id}, socket) do
+    Orchestrator.retry_issue_manual(orchestrator(), issue_id)
+    {:noreply, assign(socket, :payload, load_payload())}
+  end
+
+  def handle_event("cancel_retry", %{"issue-id" => issue_id}, socket) do
+    Orchestrator.cancel_retry(orchestrator(), issue_id)
+    {:noreply, assign(socket, :payload, load_payload())}
+  end
+
+  def handle_event("toggle_timeline", %{"run-id" => run_id}, socket) do
+    expanded = socket.assigns.expanded_timelines
+
+    expanded =
+      if MapSet.member?(expanded, run_id) do
+        MapSet.delete(expanded, run_id)
+      else
+        MapSet.put(expanded, run_id)
+      end
+
+    {:noreply, assign(socket, :expanded_timelines, expanded)}
   end
 
   @impl true
@@ -177,52 +207,57 @@ defmodule SymphonyElixirWeb.DashboardLive do
           <div class="table-wrap">
             <table class="data-table data-table-running">
               <colgroup>
-                <col style="width: 12rem;" />
-                <col style="width: 8rem;" />
-                <col style="width: 7.5rem;" />
+                <col style="width: 10rem;" />
+                <col style="width: 14rem;" />
                 <col style="width: 8.5rem;" />
                 <col />
-                <col style="width: 10rem;" />
+                <col style="width: 8rem;" />
+                <col style="width: 5rem;" />
               </colgroup>
               <thead>
                 <tr>
                   <th>Issue</th>
-                  <th>Phase</th>
-                  <th>Session</th>
+                  <th>Progress</th>
                   <th>Runtime / turns</th>
                   <th>Activity</th>
                   <th>Tokens</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 <tr :for={entry <- @payload.running}>
                   <td>
                     <div class="issue-stack">
-                      <span class="issue-id"><%= entry.issue_identifier %></span>
-                      <a class="issue-link" href={"/api/v1/#{entry.issue_identifier}"}>JSON details</a>
-                    </div>
-                  </td>
-                  <td>
-                    <span class={phase_badge_class(entry[:phase])}>
-                      <%= entry[:phase] || entry.state %>
-                    </span>
-                  </td>
-                  <td>
-                    <div class="session-stack">
-                      <%= if entry.session_id do %>
-                        <button
-                          type="button"
-                          class="subtle-button"
-                          data-label="Copy ID"
-                          data-copy={entry.session_id}
-                          onclick="navigator.clipboard.writeText(this.dataset.copy); this.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { this.textContent = this.dataset.label }, 1200);"
+                      <%= if entry[:history_run_id] do %>
+                        <span
+                          class="issue-id issue-id-clickable"
+                          phx-click="toggle_timeline"
+                          phx-value-run-id={entry.history_run_id}
+                          style="cursor: pointer;"
                         >
-                          Copy ID
-                        </button>
+                          <%= entry.issue_identifier %>
+                        </span>
                       <% else %>
-                        <span class="muted">n/a</span>
+                        <span class="issue-id"><%= entry.issue_identifier %></span>
                       <% end %>
                     </div>
+                  </td>
+                  <td>
+                    <div class="phase-steps">
+                      <span
+                        :for={step <- ["Investigate", "Implement", "Test", "Ship", "Share Evidence"]}
+                        class={phase_step_class(step, entry[:phase])}
+                        title={step}
+                      >
+                        <span class="phase-step-dot"></span>
+                        <span class="phase-step-label"><%= step %></span>
+                      </span>
+                    </div>
+                    <%= if entry[:screenshot_urls] != [] do %>
+                      <span class="state-badge" style="margin-top: 0.25rem; font-size: 0.72rem;">
+                        <%= length(entry[:screenshot_urls] || []) %> screenshot(s)
+                      </span>
+                    <% end %>
                   </td>
                   <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
                   <td>
@@ -234,21 +269,32 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         class="event-text"
                         title={entry.last_message || to_string(entry.last_event || "n/a")}
                       ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                      <span class="muted event-meta">
-                        <%= entry.last_event || "n/a" %>
-                        <%= if entry.last_event_at do %>
-                          · <span class="mono numeric"><%= entry.last_event_at %></span>
-                        <% end %>
-                      </span>
                     </div>
                   </td>
                   <td>
                     <div class="token-stack numeric">
-                      <span>Total: <%= format_int(entry.tokens.total_tokens) %></span>
-                      <span class="muted">In <%= format_int(entry.tokens.input_tokens) %> / Out <%= format_int(entry.tokens.output_tokens) %></span>
+                      <span><%= format_int(entry.tokens.total_tokens) %></span>
                     </div>
                   </td>
+                  <td>
+                    <button
+                      type="button"
+                      class="action-btn action-btn-danger"
+                      phx-click="stop_issue"
+                      phx-value-issue-id={entry.issue_id}
+                      data-confirm="Stop this agent?"
+                    >
+                      Stop
+                    </button>
+                  </td>
                 </tr>
+                <%= for entry <- @payload.running, entry[:history_run_id] && MapSet.member?(@expanded_timelines, entry.history_run_id) do %>
+                  <tr class="timeline-row">
+                    <td colspan="6">
+                      {render_timeline(assigns, entry.history_run_id)}
+                    </td>
+                  </tr>
+                <% end %>
               </tbody>
             </table>
           </div>
@@ -278,6 +324,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <th>Completed</th>
                   <th>Turns</th>
                   <th>Tokens</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -302,6 +349,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <td class="mono numeric"><%= format_timestamp(entry[:completed_at]) %></td>
                   <td class="numeric"><%= entry[:turn_count] || 0 %></td>
                   <td class="numeric"><%= format_int(entry[:tokens][:total_tokens] || 0) %></td>
+                  <td>
+                    <button
+                      type="button"
+                      class="action-btn"
+                      phx-click="retry_issue"
+                      phx-value-issue-id={entry.issue_id}
+                      data-confirm="Retry this issue?"
+                    >
+                      Retry
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -328,6 +386,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <th>Attempt</th>
                   <th>Due at</th>
                   <th>Error</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -341,6 +400,17 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <td><%= entry.attempt %></td>
                   <td class="mono"><%= entry.due_at || "n/a" %></td>
                   <td><%= entry.error || "n/a" %></td>
+                  <td>
+                    <button
+                      type="button"
+                      class="action-btn action-btn-danger"
+                      phx-click="cancel_retry"
+                      phx-value-issue-id={entry.issue_id}
+                      data-confirm="Cancel this retry?"
+                    >
+                      Cancel
+                    </button>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -526,6 +596,66 @@ defmodule SymphonyElixirWeb.DashboardLive do
     """
   end
 
+  defp render_timeline(assigns, run_id) do
+    events = History.events_for_run(run_id)
+    assigns = assign(assigns, :timeline_events, events)
+
+    ~H"""
+    <div class="timeline">
+      <%= if @timeline_events == [] do %>
+        <p class="muted" style="font-size: 0.85rem;">No events recorded.</p>
+      <% else %>
+        <div :for={event <- @timeline_events} class="timeline-item">
+          <span class={"timeline-dot #{timeline_dot_class(event.event_type)}"}></span>
+          <div class="timeline-content">
+            <span class="timeline-type"><%= event.event_type %></span>
+            <span class="timeline-time mono numeric"><%= format_timestamp(event.timestamp) %></span>
+            <%= if event.payload && event.payload != %{} do %>
+              <span class="timeline-payload muted"><%= summarize_event_payload(event) %></span>
+            <% end %>
+          </div>
+        </div>
+      <% end %>
+    </div>
+    """
+  end
+
+  defp phase_step_class(step, current_phase) when is_binary(current_phase) do
+    step_index = Enum.find_index(@phase_order, &(&1 == step)) || 999
+    current_index = Enum.find_index(@phase_order, fn s ->
+      String.downcase(s) == String.downcase(current_phase) or
+        String.contains?(String.downcase(current_phase), String.downcase(s))
+    end) || -1
+
+    cond do
+      step_index < current_index -> "phase-step phase-step-done"
+      step_index == current_index -> "phase-step phase-step-active"
+      true -> "phase-step"
+    end
+  end
+
+  defp phase_step_class(_step, _current_phase), do: "phase-step"
+
+  defp timeline_dot_class("phase_change"), do: "timeline-dot-phase"
+  defp timeline_dot_class("milestone_" <> _), do: "timeline-dot-milestone"
+  defp timeline_dot_class("screenshot_captured"), do: "timeline-dot-screenshot"
+  defp timeline_dot_class(_), do: ""
+
+  defp summarize_event_payload(%{event_type: "phase_change", payload: %{} = p}) do
+    "#{p["from"] || p[:from] || "?"} -> #{p["to"] || p[:to] || "?"}"
+  end
+
+  defp summarize_event_payload(%{event_type: "milestone_pr_created", payload: %{} = p}) do
+    p["pr_url"] || p[:pr_url] || ""
+  end
+
+  defp summarize_event_payload(%{event_type: "screenshot_captured", payload: %{} = p}) do
+    url = p["url"] || p[:url] || ""
+    if url == "screenshot_pending", do: "pending upload", else: url
+  end
+
+  defp summarize_event_payload(_event), do: ""
+
   defp load_payload do
     Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
   end
@@ -608,21 +738,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp short_pr_url(_), do: ""
 
-  defp phase_badge_class(nil), do: "state-badge"
-
-  defp phase_badge_class(phase) do
-    base = "state-badge"
-    normalized = String.downcase(phase)
-
-    cond do
-      String.contains?(normalized, "investigate") -> "#{base} state-badge-warning"
-      String.contains?(normalized, "implement") -> "#{base} state-badge-active"
-      String.contains?(normalized, "test") -> "#{base} state-badge-active"
-      String.contains?(normalized, "ship") -> "#{base} state-badge-active"
-      String.contains?(normalized, "evidence") -> "#{base} state-badge-active"
-      true -> base
-    end
-  end
 
   defp outcome_badge_class("completed"), do: "state-badge state-badge-active"
   defp outcome_badge_class("failed"), do: "state-badge state-badge-danger"

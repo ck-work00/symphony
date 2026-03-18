@@ -260,11 +260,21 @@ defmodule SymphonyElixir.Claude.CLI do
   defp validate_workspace(workspace) do
     expanded = Path.expand(workspace)
     root = Path.expand(Config.workspace_root())
+    pool_root = Path.expand("~/Documents/Gearflow")
 
     cond do
-      !File.dir?(expanded) -> {:error, {:invalid_workspace_cwd, :not_a_directory}}
-      !String.starts_with?(expanded, root) -> {:error, {:invalid_workspace_cwd, :outside_root}}
-      true -> :ok
+      !File.dir?(expanded) ->
+        {:error, {:invalid_workspace_cwd, :not_a_directory}}
+
+      String.starts_with?(expanded, root) ->
+        :ok
+
+      String.starts_with?(expanded, pool_root) ->
+        # Allow pool slot directories used by symphony-slot-claim
+        :ok
+
+      true ->
+        {:error, {:invalid_workspace_cwd, :outside_root}}
     end
   end
 

@@ -1,13 +1,22 @@
-## Step 4: Rework
+## Step 5: Ship
 
-SYMPHONY_PHASE: Implement
+SYMPHONY_PHASE: Ship
 
-If the PR has review comments or CI failures:
+1. Commit all changes with a clear message: `{{ issue.identifier }}: <summary>`
+2. Push the branch and create a PR:
+   ```bash
+   git push -u origin {{ issue.identifier | downcase }}
+   gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>"
+   ```
+3. Post the PR link as a comment on the Linear issue.
 
-1. Read all review comments carefully
-2. Address each comment with code changes
-3. Run the test suite
-4. Push the fixes
-5. Go back to Step 3
+## Step 6: Done
 
-Do NOT start from scratch. Build on your existing work.
+After shipping the PR, output exactly this marker on its own line:
+
+```
+SYMPHONY_TASK_COMPLETE
+```
+
+Then STOP. Do not continue working. Do not look for more work.
+Issue status transitions happen automatically via PR merge and deploy automations. Never move an issue's status yourself.

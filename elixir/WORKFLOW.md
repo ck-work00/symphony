@@ -22,15 +22,20 @@ workspace:
   root: ~/code/symphony-workspaces
 hooks:
   after_create: |
-    git clone --depth 1 https://github.com/openai/symphony .
-    if command -v mise >/dev/null 2>&1; then
-      cd elixir && mise trust && mise exec -- mix deps.get
+    # Route to a pool slot based on issue labels
+    REPO="${SYMPHONY_REPO:-platform}"
+    if [ -z "$REPO" ]; then
+      REPO="platform"
     fi
+    BRANCH="${SYMPHONY_ISSUE_IDENTIFIER:-main}"
+    WORKSPACE="$(pwd)"
+    ~/.claude/scripts/symphony-slot-claim.sh "$REPO" "$BRANCH" "$WORKSPACE"
   before_remove: |
-    cd elixir && mise exec -- mix workspace.before_remove
+    WORKSPACE="$(pwd)"
+    ~/.claude/scripts/symphony-slot-release.sh "$WORKSPACE"
 agent:
   backend: claude
-  max_concurrent_agents: 10
+  max_concurrent_agents: 1
   max_turns: 20
 claude:
   command: claude
@@ -44,6 +49,8 @@ codex:
   thread_sandbox: workspace-write
   turn_sandbox_policy:
     type: workspaceWrite
+server:
+  port: 4000
 ---
 
 You are working on a Linear ticket `{{ issue.identifier }}`

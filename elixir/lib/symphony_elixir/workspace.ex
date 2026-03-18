@@ -20,7 +20,10 @@ defmodule SymphonyElixir.Workspace do
       with :ok <- validate_workspace_path(workspace),
            {:ok, created?} <- ensure_workspace(workspace),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?) do
-        {:ok, workspace}
+        # If the after_create hook claimed a pool slot, use the slot directory
+        # instead of the symphony workspace directory.
+        effective_workspace = resolve_slot_workspace(workspace)
+        {:ok, effective_workspace}
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
@@ -56,6 +59,8 @@ defmodule SymphonyElixir.Workspace do
       true ->
         case validate_workspace_path(workspace) do
           :ok ->
+            # Release any claimed pool slot before removing the workspace
+            release_pool_slot(workspace)
             maybe_run_before_remove_hook(workspace)
             File.rm_rf(workspace)
 
@@ -108,6 +113,62 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp release_pool_slot(workspace) do
+    slot_file = Path.join(workspace, ".symphony_slot")
+
+    if File.exists?(slot_file) do
+      release_script = Path.expand("~/.claude/scripts/symphony-slot-release.sh")
+
+      if File.exists?(release_script) do
+        Logger.info("Releasing pool slot for workspace=#{workspace}")
+
+        case System.cmd("bash", [release_script, workspace], stderr_to_stdout: true) do
+          {output, 0} ->
+            Logger.info("Pool slot released: #{String.trim(output)}")
+
+          {output, status} ->
+            Logger.warning("Pool slot release failed status=#{status}: #{String.trim(output)}")
+        end
+      end
+    end
+  end
+
+  defp resolve_slot_workspace(workspace) do
+    slot_file = Path.join(workspace, ".symphony_slot")
+
+    case File.read(slot_file) do
+      {:ok, content} ->
+        case parse_slot_directory(content) do
+          nil ->
+            Logger.debug("No DIRECTORY in .symphony_slot, using workspace as-is")
+            workspace
+
+          slot_dir when is_binary(slot_dir) ->
+            if File.dir?(slot_dir) do
+              Logger.info("Using pool slot directory=#{slot_dir} instead of workspace=#{workspace}")
+              slot_dir
+            else
+              Logger.warning("Pool slot directory=#{slot_dir} does not exist, falling back to workspace")
+              workspace
+            end
+        end
+
+      {:error, _} ->
+        workspace
+    end
+  end
+
+  defp parse_slot_directory(content) do
+    content
+    |> String.split("\n")
+    |> Enum.find_value(fn line ->
+      case String.split(line, "=", parts: 2) do
+        ["DIRECTORY", dir] -> String.trim(dir)
+        _ -> nil
+      end
+    end)
+  end
+
   defp workspace_path_for_issue(safe_id) when is_binary(safe_id) do
     Path.join(Config.workspace_root(), safe_id)
   end
@@ -123,7 +184,12 @@ defmodule SymphonyElixir.Workspace do
   end
 
   defp maybe_run_after_create_hook(workspace, issue_context, created?) do
-    case created? do
+    # Run after_create hook if either:
+    # 1. The workspace was just created, or
+    # 2. The workspace exists but has no .symphony_slot (slot not claimed yet)
+    needs_hook = created? or not File.exists?(Path.join(workspace, ".symphony_slot"))
+
+    case needs_hook do
       true ->
         case Config.workspace_hooks()[:after_create] do
           nil ->
@@ -168,9 +234,11 @@ defmodule SymphonyElixir.Workspace do
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace}")
 
+    env = hook_env(issue_context)
+
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true, env: env)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -255,25 +323,62 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp issue_context(%{id: issue_id, identifier: identifier, labels: labels}) do
+    %{
+      issue_id: issue_id,
+      issue_identifier: identifier || "issue",
+      labels: labels || []
+    }
+  end
+
   defp issue_context(%{id: issue_id, identifier: identifier}) do
     %{
       issue_id: issue_id,
-      issue_identifier: identifier || "issue"
+      issue_identifier: identifier || "issue",
+      labels: []
     }
   end
 
   defp issue_context(identifier) when is_binary(identifier) do
     %{
       issue_id: nil,
-      issue_identifier: identifier
+      issue_identifier: identifier,
+      labels: []
     }
   end
 
   defp issue_context(_identifier) do
     %{
       issue_id: nil,
-      issue_identifier: "issue"
+      issue_identifier: "issue",
+      labels: []
     }
+  end
+
+  defp hook_env(issue_context) do
+    labels = Map.get(issue_context, :labels, [])
+
+    env =
+      System.get_env()
+      |> Map.put("SYMPHONY_ISSUE_ID", issue_context[:issue_id] || "")
+      |> Map.put("SYMPHONY_ISSUE_IDENTIFIER", issue_context[:issue_identifier] || "")
+      |> Map.put("SYMPHONY_ISSUE_LABELS", Enum.join(labels, ","))
+
+    # Routing helper: determine repo from labels
+    repo =
+      cond do
+        Enum.any?(labels, &label_matches_repo?(&1, "2.0")) -> "platform"
+        Enum.any?(labels, &label_matches_repo?(&1, "3.0")) -> "procurement"
+        true -> ""
+      end
+
+    Map.put(env, "SYMPHONY_REPO", repo)
+    |> Map.to_list()
+  end
+
+  defp label_matches_repo?(label, prefix) do
+    normalized = String.downcase(label)
+    normalized == prefix or String.starts_with?(normalized, prefix)
   end
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do

@@ -109,25 +109,35 @@ defmodule SymphonyElixir.Orchestrator do
           case reason do
             :normal ->
               continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
+              has_pr = Map.get(running_entry, :pr_url) != nil
 
-              if continuation_count > @max_continuations do
-                Logger.warning(
-                  "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching"
-                )
+              cond do
+                has_pr ->
+                  Logger.info(
+                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PR exists (#{running_entry.pr_url}), not re-dispatching"
+                  )
 
-                complete_issue(state, issue_id)
-              else
-                Logger.info(
-                  "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling continuation #{continuation_count}/#{@max_continuations}"
-                )
+                  complete_issue(state, issue_id)
 
-                state
-                |> complete_issue(issue_id)
-                |> schedule_issue_retry(issue_id, continuation_count, %{
-                  identifier: running_entry.identifier,
-                  delay_type: :continuation,
-                  continuation_count: continuation_count
-                })
+                continuation_count > @max_continuations ->
+                  Logger.warning(
+                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching"
+                  )
+
+                  complete_issue(state, issue_id)
+
+                true ->
+                  Logger.info(
+                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling continuation #{continuation_count}/#{@max_continuations}"
+                  )
+
+                  state
+                  |> complete_issue(issue_id)
+                  |> schedule_issue_retry(issue_id, continuation_count, %{
+                    identifier: running_entry.identifier,
+                    delay_type: :continuation,
+                    continuation_count: continuation_count
+                  })
               end
 
             _ ->

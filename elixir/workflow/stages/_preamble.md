@@ -76,6 +76,11 @@ Do not restart from scratch.
 
 If a PR already exists for this issue:
 1. Check CI: `gh pr checks <number>`. Fix failures and push.
-2. Check review comments: `gh pr view <number> --comments`. Address feedback and push.
-3. If all clear — output `SYMPHONY_TASK_COMPLETE` and STOP.
+2. Fetch review comments:
+   ```bash
+   gh pr view <number> --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
+   gh api repos/{owner}/{repo}/pulls/<number>/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
+   ```
+3. Address any unresolved review comments, push fixes.
+4. If all clear (CI green, reviews addressed) — output `SYMPHONY_TASK_COMPLETE` and STOP.
 {% endif %}

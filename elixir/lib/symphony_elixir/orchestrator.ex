@@ -110,11 +110,13 @@ defmodule SymphonyElixir.Orchestrator do
             :normal ->
               continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
               has_pr = Map.get(running_entry, :pr_url) != nil
+              # Allow one continuation after PR to check review comments, then stop
+              pr_continuation_exhausted = has_pr and continuation_count > 1
 
               cond do
-                has_pr ->
+                pr_continuation_exhausted ->
                   Logger.info(
-                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PR exists (#{running_entry.pr_url}), not re-dispatching"
+                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PR exists (#{running_entry.pr_url}) and review pass done, not re-dispatching"
                   )
 
                   complete_issue(state, issue_id)
@@ -127,8 +129,10 @@ defmodule SymphonyElixir.Orchestrator do
                   complete_issue(state, issue_id)
 
                 true ->
+                  reason_str = if has_pr, do: "PR review pass", else: "continuation"
+
                   Logger.info(
-                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling continuation #{continuation_count}/#{@max_continuations}"
+                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling #{reason_str} #{continuation_count}/#{@max_continuations}"
                   )
 
                   state

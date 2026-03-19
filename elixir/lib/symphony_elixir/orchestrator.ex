@@ -727,6 +727,7 @@ defmodule SymphonyElixir.Orchestrator do
             continuation_count: Map.get(metadata, :continuation_count, 0),
             started_at: now,
             phase_changed_at: now,
+            phases_seen: [],
             screenshot_urls: [],
             history_run_id: history_run_id
           })
@@ -1066,6 +1067,7 @@ defmodule SymphonyElixir.Orchestrator do
           last_codex_message: metadata.last_codex_message,
           last_codex_event: metadata.last_codex_event,
           phase: Map.get(metadata, :phase),
+          phases_seen: Map.get(metadata, :phases_seen, []),
           phase_changed_at: Map.get(metadata, :phase_changed_at),
           pr_url: Map.get(metadata, :pr_url),
           screenshot_urls: Map.get(metadata, :screenshot_urls, []),
@@ -1196,12 +1198,17 @@ defmodule SymphonyElixir.Orchestrator do
     # Track screenshot URLs from Playwright tool uses
     screenshot_urls = screenshot_urls_for_update(running_entry, update)
 
-    # Update phase_changed_at when phase transitions
-    phase_changed_at =
+    # Update phase_changed_at and phases_seen when phase transitions
+    existing_phases = Map.get(running_entry, :phases_seen, [])
+
+    {phase_changed_at, phases_seen} =
       if phase != old_phase and phase != nil do
-        timestamp
+        updated_phases =
+          if phase in existing_phases, do: existing_phases, else: existing_phases ++ [phase]
+
+        {timestamp, updated_phases}
       else
-        Map.get(running_entry, :phase_changed_at, timestamp)
+        {Map.get(running_entry, :phase_changed_at, timestamp), existing_phases}
       end
 
     {
@@ -1212,6 +1219,7 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_event: event,
         phase: phase,
         phase_changed_at: phase_changed_at,
+        phases_seen: phases_seen,
         pr_url: pr_url,
         screenshot_urls: screenshot_urls,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
@@ -1339,6 +1347,7 @@ defmodule SymphonyElixir.Orchestrator do
       started_at: running_entry[:started_at],
       completed_at: now,
       phase: Map.get(running_entry, :phase),
+      phases_seen: Map.get(running_entry, :phases_seen, []),
       pr_url: Map.get(running_entry, :pr_url),
       outcome: outcome,
       turn_count: Map.get(running_entry, :turn_count, 0),

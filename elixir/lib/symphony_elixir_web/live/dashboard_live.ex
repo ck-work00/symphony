@@ -337,7 +337,20 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <%= entry.outcome %>
                     </span>
                   </td>
-                  <td><%= entry[:phase] || "—" %></td>
+                  <td>
+                    <%= if entry[:phases_seen] != nil and entry[:phases_seen] != [] do %>
+                      <div class="phases-seen">
+                        <span
+                          :for={phase <- entry[:phases_seen]}
+                          class={completed_phase_class(phase)}
+                        >
+                          <%= phase %>
+                        </span>
+                      </div>
+                    <% else %>
+                      <%= entry[:phase] || "—" %>
+                    <% end %>
+                  </td>
                   <td>
                     <%= if entry[:pr_url] do %>
                       <a class="pr-link" href={entry.pr_url} target="_blank"><%= short_pr_url(entry.pr_url) %></a>
@@ -738,6 +751,10 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp short_pr_url(_), do: ""
 
+
+  defp completed_phase_class(phase) do
+    "phase-chip phase-chip-#{String.downcase(String.replace(phase, " ", "-"))}"
+  end
 
   defp outcome_badge_class("completed"), do: "state-badge state-badge-active"
   defp outcome_badge_class("failed"), do: "state-badge state-badge-danger"

@@ -652,6 +652,30 @@ pre,
   text-decoration: underline;
 }
 
+/* Completed phase chips */
+.phases-seen {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+}
+
+.phase-chip {
+  display: inline-block;
+  padding: 0.15rem 0.4rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  background: var(--accent-soft);
+  border: 1px solid rgba(16, 163, 127, 0.18);
+  color: var(--accent-ink);
+}
+
+.phase-chip-investigate { background: #fff7e8; border-color: #f1d8a6; color: #8a5a00; }
+.phase-chip-implement { background: var(--accent-soft); border-color: rgba(16, 163, 127, 0.18); color: var(--accent-ink); }
+.phase-chip-test { background: #e8f0ff; border-color: #b3ccf5; color: #1a4b8c; }
+.phase-chip-ship { background: var(--accent-soft); border-color: rgba(16, 163, 127, 0.18); color: var(--accent-ink); }
+.phase-chip-share-evidence { background: #f3e8ff; border-color: #d4b5f5; color: #5b21b6; }
+
 @media (max-width: 560px) {
   .metric-grid {
     grid-template-columns: 1fr;

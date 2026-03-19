@@ -160,15 +160,41 @@ defmodule SymphonyElixir.PromptBuilder do
         ""
 
       preamble ->
-        # Extract just the environment/slot setup lines, not the full preamble
-        preamble
-        |> String.split("\n")
-        |> Enum.take_while(fn line ->
-          not String.contains?(line, "## Phase Markers") and
-            not String.contains?(line, "SYMPHONY_PHASE:")
-        end)
-        |> Enum.join("\n")
-        |> String.trim()
+        # Extract only the Working Directory and Environment sections from the preamble.
+        # Skip everything else (scope, issue context, continuation) because those contain
+        # unrendered Solid template variables and instructions that conflict with retask
+        # (e.g. "if PR exists, stop immediately").
+        sections = extract_sections(preamble, ["## CRITICAL: Working Directory", "## Environment Notes", "## Guardrails"])
+        sections |> Enum.join("\n\n") |> String.trim()
+    end
+  end
+
+  defp extract_sections(text, headings) do
+    lines = String.split(text, "\n")
+
+    Enum.flat_map(headings, fn heading ->
+      case find_section(lines, heading) do
+        nil -> []
+        section -> [section]
+      end
+    end)
+  end
+
+  defp find_section(lines, heading) do
+    case Enum.drop_while(lines, fn line -> not String.starts_with?(line, heading) end) do
+      [] ->
+        nil
+
+      [_heading_line | rest] ->
+        # Take lines until the next ## heading or Solid template block
+        body =
+          rest
+          |> Enum.take_while(fn line ->
+            not (String.starts_with?(line, "## ") and not String.starts_with?(line, "### ")) and
+              not String.starts_with?(String.trim(line), "{%")
+          end)
+
+        [heading | body] |> Enum.join("\n") |> String.trim()
     end
   end
 

@@ -652,13 +652,36 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        case check_existing_pr(refreshed_issue) do
-          {:pr_exists, pr_url} ->
-            Logger.info("Skipping dispatch; open PR already exists for #{issue_context(refreshed_issue)}: #{pr_url}")
-            complete_issue(state, refreshed_issue.id)
+        # If this is already a retask continuation, dispatch directly
+        if metadata[:retask_phases] do
+          do_dispatch_issue(state, refreshed_issue, attempt, metadata)
+        else
+          # Check for existing PR and let the judge decide
+          pr_url =
+            case check_existing_pr(refreshed_issue) do
+              {:pr_exists, url} -> url
+              :no_pr -> nil
+            end
 
-          :no_pr ->
-            do_dispatch_issue(state, refreshed_issue, attempt, metadata)
+          case PhaseJudge.pre_dispatch_assess(refreshed_issue, pr_url) do
+            :fresh ->
+              do_dispatch_issue(state, refreshed_issue, attempt, metadata)
+
+            :done ->
+              Logger.info("PhaseJudge: all phases complete for #{issue_context(refreshed_issue)}, skipping dispatch")
+              complete_issue(state, refreshed_issue.id)
+
+            {:retask, missing_phases, completed_phases} ->
+              Logger.info("PhaseJudge: dispatching #{issue_context(refreshed_issue)} for missing phases: #{inspect(missing_phases)}")
+
+              retask_metadata =
+                Map.merge(metadata, %{
+                  retask_phases: missing_phases,
+                  completed_phases: completed_phases
+                })
+
+              do_dispatch_issue(state, refreshed_issue, attempt, retask_metadata)
+          end
         end
 
       {:skip, :missing} ->

@@ -35,11 +35,64 @@ defmodule SymphonyElixir.PhaseJudge do
     end
   end
 
+  @doc """
+  Pre-dispatch assessment: decide whether to dispatch an issue that may already
+  have work in progress (PR, evidence, etc.).
+
+  Returns:
+  - `:done` — all phases complete, don't dispatch
+  - `{:retask, missing, completed}` — dispatch with targeted prompt
+  - `:fresh` — no prior work detected, dispatch normally
+  """
+  @spec pre_dispatch_assess(map(), String.t() | nil) :: :fresh | assessment()
+  def pre_dispatch_assess(issue, pr_url) do
+    if pr_url == nil do
+      :fresh
+    else
+      # PR exists — check what else is done
+      evidence_posted = check_linear_evidence(issue)
+
+      completed = ["Investigate", "Implement", "Ship"]
+      completed = if evidence_posted, do: completed ++ ["Test", "Share Evidence"], else: completed
+
+      missing = @phases_in_order -- completed
+
+      Logger.info("PhaseJudge pre-dispatch: issue=#{issue_id(issue)} pr=#{pr_url} evidence=#{evidence_posted} completed=#{inspect(completed)} missing=#{inspect(missing)}")
+
+      if missing == [] do
+        :done
+      else
+        {:retask, missing, completed}
+      end
+    end
+  end
+
   @doc "Returns the canonical phase order."
   def phases_in_order, do: @phases_in_order
 
   # ---------------------------------------------------------------------------
-  # Phase detection — uses concrete signals from the running entry
+  # Pre-dispatch checks — probes external systems (Linear, GitHub)
+  # ---------------------------------------------------------------------------
+
+  defp check_linear_evidence(%{id: issue_id}) when is_binary(issue_id) do
+    case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+      {:ok, comments} ->
+        all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
+        String.contains?(all_text, "![") or String.contains?(all_text, "screenshot")
+
+      _ ->
+        false
+    end
+  end
+
+  defp check_linear_evidence(_), do: false
+
+  defp issue_id(%{identifier: id}) when is_binary(id), do: id
+  defp issue_id(%{id: id}) when is_binary(id), do: id
+  defp issue_id(_), do: "unknown"
+
+  # ---------------------------------------------------------------------------
+  # Post-run phase detection — uses concrete signals from the running entry
   # ---------------------------------------------------------------------------
 
   defp detect_completed_phases(entry) do

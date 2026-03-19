@@ -104,11 +104,11 @@ defmodule SymphonyElixir.Claude.StreamParser do
     text = extract_text_content(event)
 
     # Priority 1: Explicit SYMPHONY_PHASE marker
+    # Priority 2: Markdown phase headers
+    # Priority 3: Tool-based heuristic
     detect_symphony_phase(text) ||
-      # Priority 2: Markdown phase headers
       detect_phase_header(text) ||
-      # Priority 3: Tool-based heuristic
-      (event |> extract_tool_uses() |> infer_phase_from_tools())
+      event |> extract_tool_uses() |> infer_phase_from_tools()
   end
 
   def extract_phase(_event), do: nil

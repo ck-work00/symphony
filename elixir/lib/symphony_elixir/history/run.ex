@@ -10,52 +10,52 @@ defmodule SymphonyElixir.History.Run do
 
   schema "runs" do
     # Issue context
-    field :issue_id, :string
-    field :issue_identifier, :string
-    field :issue_title, :string
-    field :issue_priority, :integer
-    field :issue_labels, {:array, :string}, default: []
+    field(:issue_id, :string)
+    field(:issue_identifier, :string)
+    field(:issue_title, :string)
+    field(:issue_priority, :integer)
+    field(:issue_labels, {:array, :string}, default: [])
 
     # Targeting context
-    field :filter_source, :string
-    field :project_slug, :string
+    field(:filter_source, :string)
+    field(:project_slug, :string)
 
     # Run lifecycle
-    field :started_at, :utc_datetime_usec
-    field :finished_at, :utc_datetime_usec
-    field :outcome, :string
-    field :agent_backend, :string
-    field :session_id, :string
-    field :workspace_path, :string
+    field(:started_at, :utc_datetime_usec)
+    field(:finished_at, :utc_datetime_usec)
+    field(:outcome, :string)
+    field(:agent_backend, :string)
+    field(:session_id, :string)
+    field(:workspace_path, :string)
 
     # Effort
-    field :turns_used, :integer, default: 0
-    field :retry_attempt, :integer, default: 0
-    field :input_tokens, :integer, default: 0
-    field :output_tokens, :integer, default: 0
-    field :total_tokens, :integer, default: 0
-    field :wall_clock_ms, :integer
+    field(:turns_used, :integer, default: 0)
+    field(:retry_attempt, :integer, default: 0)
+    field(:input_tokens, :integer, default: 0)
+    field(:output_tokens, :integer, default: 0)
+    field(:total_tokens, :integer, default: 0)
+    field(:wall_clock_ms, :integer)
 
     # Phase reached
-    field :final_phase, :string
+    field(:final_phase, :string)
 
     # Evaluation
-    field :eval_score, :integer
-    field :eval_pr_created, :boolean
-    field :eval_pr_url, :string
-    field :eval_ci_status, :string
-    field :eval_files_changed, :integer
-    field :eval_lines_changed, :integer
-    field :eval_branch_pushed, :boolean
-    field :eval_evidence_posted, :boolean
-    field :eval_workpad_updated, :boolean
-    field :eval_tests_written, :boolean
+    field(:eval_score, :integer)
+    field(:eval_pr_created, :boolean)
+    field(:eval_pr_url, :string)
+    field(:eval_ci_status, :string)
+    field(:eval_files_changed, :integer)
+    field(:eval_lines_changed, :integer)
+    field(:eval_branch_pushed, :boolean)
+    field(:eval_evidence_posted, :boolean)
+    field(:eval_workpad_updated, :boolean)
+    field(:eval_tests_written, :boolean)
 
     # Error context
-    field :error_message, :string
-    field :error_category, :string
+    field(:error_message, :string)
+    field(:error_category, :string)
 
-    has_many :events, SymphonyElixir.History.RunEvent
+    has_many(:events, SymphonyElixir.History.RunEvent)
 
     timestamps(type: :utc_datetime_usec)
   end

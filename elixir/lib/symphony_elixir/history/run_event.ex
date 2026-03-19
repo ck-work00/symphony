@@ -7,10 +7,10 @@ defmodule SymphonyElixir.History.RunEvent do
   import Ecto.Changeset
 
   schema "run_events" do
-    field :run_id, :binary_id
-    field :event_type, :string
-    field :payload, :map, default: %{}
-    field :timestamp, :utc_datetime_usec
+    field(:run_id, :binary_id)
+    field(:event_type, :string)
+    field(:payload, :map, default: %{})
+    field(:timestamp, :utc_datetime_usec)
   end
 
   @required_fields ~w(run_id event_type timestamp)a

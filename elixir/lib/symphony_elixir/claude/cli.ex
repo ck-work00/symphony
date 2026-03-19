@@ -160,9 +160,7 @@ defmodule SymphonyElixir.Claude.CLI do
         %{state | session_id: session_id, usage: usage, task_complete: task_complete}
 
       {:error, reason} ->
-        Logger.debug(
-          "Unparseable stream line: #{inspect(reason)} line=#{String.slice(full_line, 0, @max_log_bytes)}"
-        )
+        Logger.debug("Unparseable stream line: #{inspect(reason)} line=#{String.slice(full_line, 0, @max_log_bytes)}")
 
         state
     end

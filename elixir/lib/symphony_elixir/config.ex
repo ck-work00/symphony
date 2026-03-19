@@ -129,24 +129,24 @@ defmodule SymphonyElixir.Config do
                                ]
                              ],
                              suitability: [
-                              type: :map,
-                              default: %{},
-                              keys: [
-                                skip_labels: [
-                                  type: {:list, :string},
-                                  default: []
-                                ],
-                                require_description: [
-                                  type: :boolean,
-                                  default: false
-                                ],
-                                min_priority: [
-                                  type: {:or, [:pos_integer, nil]},
-                                  default: nil
-                                ]
-                              ]
-                            ],
-                            codex: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 skip_labels: [
+                                   type: {:list, :string},
+                                   default: []
+                                 ],
+                                 require_description: [
+                                   type: :boolean,
+                                   default: false
+                                 ],
+                                 min_priority: [
+                                   type: {:or, [:pos_integer, nil]},
+                                   default: nil
+                                 ]
+                               ]
+                             ],
+                             codex: [
                                type: :map,
                                default: %{},
                                keys: [

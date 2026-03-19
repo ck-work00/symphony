@@ -118,7 +118,10 @@ defmodule SymphonyElixir.History do
   def total_tokens(opts \\ []) do
     completed_runs_query(opts)
     |> Repo.aggregate(:sum, :total_tokens)
-    |> then(fn nil -> 0; n -> n end)
+    |> then(fn
+      nil -> 0
+      n -> n
+    end)
   end
 
   @spec failure_breakdown(keyword()) :: [%{category: String.t(), count: integer()}]

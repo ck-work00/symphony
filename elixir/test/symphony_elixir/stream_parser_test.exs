@@ -87,15 +87,16 @@ defmodule SymphonyElixir.Claude.StreamParserTest do
 
     test "SYMPHONY_PHASE takes priority over tool-based inference" do
       # Event has both a SYMPHONY_PHASE marker and an Edit tool use
-      event = %{
-        "message" => %{
-          "content" => [
-            %{"type" => "text", "text" => "SYMPHONY_PHASE: Test"},
-            %{"type" => "tool_use", "name" => "Edit", "input" => %{"file_path" => "/f.ex"}}
-          ]
+      event =
+        %{
+          "message" => %{
+            "content" => [
+              %{"type" => "text", "text" => "SYMPHONY_PHASE: Test"},
+              %{"type" => "tool_use", "name" => "Edit", "input" => %{"file_path" => "/f.ex"}}
+            ]
+          }
         }
-      }
-      |> Map.put(:event_type, :assistant)
+        |> Map.put(:event_type, :assistant)
 
       # Should return "Test" from SYMPHONY_PHASE, not "Implement" from Edit
       assert StreamParser.extract_phase(event) == "Test"

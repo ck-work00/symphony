@@ -635,10 +635,12 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
   defp phase_step_class(step, current_phase) when is_binary(current_phase) do
     step_index = Enum.find_index(@phase_order, &(&1 == step)) || 999
-    current_index = Enum.find_index(@phase_order, fn s ->
-      String.downcase(s) == String.downcase(current_phase) or
-        String.contains?(String.downcase(current_phase), String.downcase(s))
-    end) || -1
+
+    current_index =
+      Enum.find_index(@phase_order, fn s ->
+        String.downcase(s) == String.downcase(current_phase) or
+          String.contains?(String.downcase(current_phase), String.downcase(s))
+      end) || -1
 
     cond do
       step_index < current_index -> "phase-step phase-step-done"
@@ -750,7 +752,6 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp short_pr_url(_), do: ""
-
 
   defp completed_phase_class(phase) do
     "phase-chip phase-chip-#{String.downcase(String.replace(phase, " ", "-"))}"

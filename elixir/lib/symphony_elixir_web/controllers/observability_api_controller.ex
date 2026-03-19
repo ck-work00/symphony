@@ -124,11 +124,13 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
   defp maybe_add_filter(opts, key, value), do: Keyword.put(opts, key, value)
 
   defp parse_int(nil, default), do: default
+
   defp parse_int(value, default) when is_binary(value) do
     case Integer.parse(value) do
       {n, _} -> n
       :error -> default
     end
   end
+
   defp parse_int(_, default), do: default
 end

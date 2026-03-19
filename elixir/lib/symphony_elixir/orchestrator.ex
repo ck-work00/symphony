@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{Config, Evaluator, History, StatusDashboard, Suitability, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Evaluator, History, PhaseJudge, StatusDashboard, Suitability, Tracker, Workspace}
   alias SymphonyElixir.Claude.StreamParser
   alias SymphonyElixir.Linear.Issue
 
@@ -109,39 +109,37 @@ defmodule SymphonyElixir.Orchestrator do
           case reason do
             :normal ->
               continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
-              has_pr = Map.get(running_entry, :pr_url) != nil
-              # Allow one continuation after PR to check review comments, then stop
-              pr_continuation_exhausted = has_pr and continuation_count > 1
 
-              cond do
-                pr_continuation_exhausted ->
-                  Logger.info(
-                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PR exists (#{running_entry.pr_url}) and review pass done, not re-dispatching"
-                  )
+              case PhaseJudge.assess(running_entry) do
+                :done ->
+                  Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PhaseJudge says done")
 
                   complete_issue(state, issue_id)
 
-                continuation_count > @max_continuations ->
-                  Logger.warning(
-                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching"
-                  )
+                {:retask, missing_phases, completed_phases} ->
+                  cond do
+                    continuation_count > @max_continuations ->
+                      Logger.warning(
+                        "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching (missing: #{inspect(missing_phases)})"
+                      )
 
-                  complete_issue(state, issue_id)
+                      complete_issue(state, issue_id)
 
-                true ->
-                  reason_str = if has_pr, do: "PR review pass", else: "continuation"
+                    true ->
+                      Logger.info(
+                        "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; retasking for missing phases: #{inspect(missing_phases)} (#{continuation_count}/#{@max_continuations})"
+                      )
 
-                  Logger.info(
-                    "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling #{reason_str} #{continuation_count}/#{@max_continuations}"
-                  )
-
-                  state
-                  |> complete_issue(issue_id)
-                  |> schedule_issue_retry(issue_id, continuation_count, %{
-                    identifier: running_entry.identifier,
-                    delay_type: :continuation,
-                    continuation_count: continuation_count
-                  })
+                      state
+                      |> complete_issue(issue_id)
+                      |> schedule_issue_retry(issue_id, continuation_count, %{
+                        identifier: running_entry.identifier,
+                        delay_type: :continuation,
+                        continuation_count: continuation_count,
+                        retask_phases: missing_phases,
+                        completed_phases: completed_phases
+                      })
+                  end
               end
 
             _ ->
@@ -537,13 +535,14 @@ defmodule SymphonyElixir.Orchestrator do
          active_states,
          terminal_states
        ) do
-    result = candidate_issue?(issue, active_states, terminal_states) and
-      !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
-      suitable_issue?(issue) and
-      !MapSet.member?(claimed, issue.id) and
-      !Map.has_key?(running, issue.id) and
-      available_slots(state) > 0 and
-      state_slots_available?(issue, running)
+    result =
+      candidate_issue?(issue, active_states, terminal_states) and
+        !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
+        suitable_issue?(issue) and
+        !MapSet.member?(claimed, issue.id) and
+        !Map.has_key?(running, issue.id) and
+        available_slots(state) > 0 and
+        state_slots_available?(issue, running)
 
     result
   end
@@ -687,7 +686,11 @@ defmodule SymphonyElixir.Orchestrator do
     runner = Config.agent_runner_module()
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
-           runner.run(issue, recipient, attempt: attempt)
+           runner.run(issue, recipient,
+             attempt: attempt,
+             retask_phases: metadata[:retask_phases],
+             completed_phases: metadata[:completed_phases]
+           )
          end) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
@@ -795,9 +798,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp exhaust_failure_retries(state, issue_id, previous_retry, next_attempt, metadata) do
     identifier = metadata[:identifier] || Map.get(previous_retry, :identifier) || issue_id
 
-    Logger.warning(
-      "Max failure retries (#{Config.max_failure_retries()}) exhausted for issue_id=#{issue_id} issue_identifier=#{identifier}; stopping"
-    )
+    Logger.warning("Max failure retries (#{Config.max_failure_retries()}) exhausted for issue_id=#{issue_id} issue_identifier=#{identifier}; stopping")
 
     state = complete_issue(state, issue_id)
     record_max_retries_event(state, issue_id, identifier, next_attempt)
@@ -830,7 +831,9 @@ defmodule SymphonyElixir.Orchestrator do
             due_at_ms: due_at_ms,
             identifier: identifier,
             error: error,
-            continuation_count: Map.get(metadata, :continuation_count, 0)
+            continuation_count: Map.get(metadata, :continuation_count, 0),
+            retask_phases: Map.get(metadata, :retask_phases),
+            completed_phases: Map.get(metadata, :completed_phases)
           })
     }
   end
@@ -841,7 +844,9 @@ defmodule SymphonyElixir.Orchestrator do
         metadata = %{
           identifier: Map.get(retry_entry, :identifier),
           error: Map.get(retry_entry, :error),
-          continuation_count: Map.get(retry_entry, :continuation_count, 0)
+          continuation_count: Map.get(retry_entry, :continuation_count, 0),
+          retask_phases: Map.get(retry_entry, :retask_phases),
+          completed_phases: Map.get(retry_entry, :completed_phases)
         }
 
         {:ok, attempt, metadata, %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}}
@@ -1842,9 +1847,7 @@ defmodule SymphonyElixir.Orchestrator do
     result =
       Enum.find_value(repos, fn repo ->
         Enum.find_value(branches, fn branch ->
-          case System.cmd("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"],
-                 stderr_to_stdout: true
-               ) do
+          case System.cmd("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"], stderr_to_stdout: true) do
             {url, 0} ->
               trimmed = String.trim(url)
               if trimmed != "" and String.starts_with?(trimmed, "http"), do: trimmed
@@ -1970,7 +1973,7 @@ defmodule SymphonyElixir.Orchestrator do
     normalized_old = old_phase && String.downcase(old_phase)
 
     cond do
-      normalized_new && String.contains?(normalized_new, "implement") and
+      (normalized_new && String.contains?(normalized_new, "implement")) and
           (normalized_old == nil or not String.contains?(normalized_old, "implement")) ->
         History.record_event(%{
           run_id: run_id,
@@ -1979,7 +1982,7 @@ defmodule SymphonyElixir.Orchestrator do
           timestamp: now
         })
 
-      normalized_new && String.contains?(normalized_new, "test") and
+      (normalized_new && String.contains?(normalized_new, "test")) and
           (normalized_old == nil or not String.contains?(normalized_old, "test")) ->
         History.record_event(%{
           run_id: run_id,
@@ -1994,9 +1997,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_max_retries_event(_state, issue_id, identifier, attempt) do
-    Logger.info(
-      "Recording max_retries_exhausted for issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{attempt}"
-    )
+    Logger.info("Recording max_retries_exhausted for issue_id=#{issue_id} issue_identifier=#{identifier} attempt=#{attempt}")
 
     :ok
   end

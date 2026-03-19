@@ -76,6 +76,102 @@ defmodule SymphonyElixir.PromptBuilder do
     """
   end
 
+  @doc """
+  Builds a targeted retask prompt for only the missing phases.
+
+  Instead of the full 8000-line workflow prompt, this produces a focused ~200-line
+  prompt that tells the agent exactly which phases to complete and skips everything
+  already done.
+  """
+  @spec build_retask_prompt(map(), [String.t()], [String.t()], keyword()) :: String.t()
+  def build_retask_prompt(issue, missing_phases, completed_phases, _opts \\ []) do
+    stages_dir = Workflow.stages_directory()
+    stages = StageLoader.load_stages(stages_dir)
+
+    # Build completed phases list
+    completed_list =
+      completed_phases
+      |> Enum.map(&"- #{&1}")
+      |> Enum.join("\n")
+
+    # Build missing phases content by extracting each phase's section from the stage files
+    missing_content =
+      missing_phases
+      |> Enum.map(fn phase ->
+        content = StageLoader.phase_content(stages, phase)
+
+        if content do
+          "### #{phase} (INCOMPLETE)\n\n#{content}"
+        else
+          "### #{phase} (INCOMPLETE)\n\nComplete the #{phase} phase."
+        end
+      end)
+      |> Enum.join("\n\n---\n\n")
+
+    # Load retask template or use default
+    template = StageLoader.load_retask_template(stages_dir) || default_retask_template()
+
+    # Render the template with issue context
+    identifier = issue_identifier(issue)
+
+    prompt =
+      template
+      |> String.replace("{{identifier}}", identifier)
+      |> String.replace("{{completed_phases_list}}", completed_list)
+      |> String.replace("{{missing_phases_content}}", missing_content)
+
+    # Prepend essential context (slot info, env vars) from preamble if available
+    preamble_context = extract_preamble_context(stages)
+
+    if preamble_context != "" do
+      preamble_context <> "\n\n---\n\n" <> prompt
+    else
+      prompt
+    end
+  end
+
+  defp issue_identifier(%{identifier: id}) when is_binary(id), do: id
+  defp issue_identifier(_), do: "unknown"
+
+  defp default_retask_template do
+    """
+    You are continuing work on {{identifier}}.
+
+    ## IMPORTANT: Do NOT repeat completed work
+
+    These phases are DONE — do not redo them:
+    {{completed_phases_list}}
+
+    ## Remaining work
+
+    Complete ONLY these phases:
+
+    {{missing_phases_content}}
+
+    When all phases above are complete, output exactly this marker on its own line and STOP:
+
+    SYMPHONY_TASK_COMPLETE
+    """
+  end
+
+  defp extract_preamble_context(stages) do
+    case Map.get(stages, "_preamble.md") do
+      nil ->
+        ""
+
+      preamble ->
+        # Extract just the environment/slot setup lines, not the full preamble
+        preamble
+        |> String.split("\n")
+        |> Enum.take_while(fn line ->
+          not String.contains?(line, "## Phase Markers") and
+            not String.contains?(line, "SYMPHONY_PHASE:")
+        end)
+        |> Enum.join("\n")
+        |> String.trim()
+    end
+  end
+
   defp format_comments_section([]), do: ""
 
   defp format_comments_section(comments) do

@@ -159,25 +159,19 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
         cond do
           task_complete ->
-            Logger.info(
-              "Agent signaled SYMPHONY_TASK_COMPLETE for #{issue_context(issue)}, stopping"
-            )
+            Logger.info("Agent signaled SYMPHONY_TASK_COMPLETE for #{issue_context(issue)}, stopping")
 
             :ok
 
           next_no_progress >= 2 ->
-            Logger.warning(
-              "No progress for #{next_no_progress} consecutive turns for #{issue_context(issue)}, stopping early"
-            )
+            Logger.warning("No progress for #{next_no_progress} consecutive turns for #{issue_context(issue)}, stopping early")
 
             :ok
 
           true ->
             case continue_with_issue?(issue, issue_state_fetcher) do
               {:continue, refreshed_issue} when turn_number < max_turns ->
-                Logger.info(
-                  "Continuing Claude agent run for #{issue_context(refreshed_issue)} turn=#{turn_number}/#{max_turns}"
-                )
+                Logger.info("Continuing Claude agent run for #{issue_context(refreshed_issue)} turn=#{turn_number}/#{max_turns}")
 
                 do_run_claude_turns(
                   workspace,
@@ -194,9 +188,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
                 )
 
               {:continue, refreshed_issue} ->
-                Logger.info(
-                  "Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active"
-                )
+                Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active")
 
                 :ok
 
@@ -214,7 +206,14 @@ defmodule SymphonyElixir.Claude.AgentRunner do
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns, _comments) do
-    PromptBuilder.build_prompt(issue, opts)
+    case Keyword.get(opts, :retask_phases) do
+      nil ->
+        PromptBuilder.build_prompt(issue, opts)
+
+      missing_phases ->
+        completed_phases = Keyword.get(opts, :completed_phases, [])
+        PromptBuilder.build_retask_prompt(issue, missing_phases, completed_phases, opts)
+    end
   end
 
   defp build_turn_prompt(issue, _opts, turn_number, max_turns, comments) do

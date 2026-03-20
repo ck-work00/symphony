@@ -26,6 +26,23 @@ defmodule SymphonyElixir.PhaseJudge do
     completed = detect_completed_phases(running_entry)
     missing = @phases_in_order -- completed
 
+    # If only Test/Share Evidence are missing, check Linear directly —
+    # the agent may have posted evidence via curl without the stream parser
+    # capturing the URLs in screenshot_urls.
+    {missing, completed} =
+      if missing != [] and missing -- ["Test", "Share Evidence"] == [] do
+        issue = Map.get(running_entry, :issue)
+
+        if issue != nil and check_linear_evidence(issue) do
+          Logger.info("PhaseJudge: Linear evidence found for #{running_entry[:identifier]}, marking Test+Share Evidence done")
+          {[], @phases_in_order}
+        else
+          {missing, completed}
+        end
+      else
+        {missing, completed}
+      end
+
     Logger.info("PhaseJudge: issue=#{running_entry[:identifier]} completed=#{inspect(completed)} missing=#{inspect(missing)}")
 
     if missing == [] do
@@ -71,10 +88,12 @@ defmodule SymphonyElixir.PhaseJudge do
   def phases_in_order, do: @phases_in_order
 
   # ---------------------------------------------------------------------------
-  # Pre-dispatch checks — probes external systems (Linear, GitHub)
+  # Evidence checks — probes Linear for screenshots/comments
   # ---------------------------------------------------------------------------
 
-  defp check_linear_evidence(%{id: issue_id}) when is_binary(issue_id) do
+  @doc "Check whether the Linear issue has screenshot evidence in its comments."
+  @spec check_linear_evidence(map()) :: boolean()
+  def check_linear_evidence(%{id: issue_id}) when is_binary(issue_id) do
     case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
       {:ok, comments} ->
         all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
@@ -85,7 +104,7 @@ defmodule SymphonyElixir.PhaseJudge do
     end
   end
 
-  defp check_linear_evidence(_), do: false
+  def check_linear_evidence(_), do: false
 
   defp issue_id(%{identifier: id}) when is_binary(id), do: id
   defp issue_id(%{id: id}) when is_binary(id), do: id

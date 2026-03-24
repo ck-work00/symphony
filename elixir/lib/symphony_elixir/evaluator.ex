@@ -41,7 +41,23 @@ defmodule SymphonyElixir.Evaluator do
     issue_id = run_context[:issue_id]
     branch = run_context[:branch_name] || run_context[:identifier]
 
-    pr_result = check_pr(workspace_path, branch)
+    # Resolve actual working directory from pool slot if present
+    workspace_path = resolve_workspace_path(workspace_path)
+
+    # Try the actual git branch first, then fall back to Linear branch name and identifier
+    pr_result =
+      case detect_current_branch(workspace_path) do
+        {:ok, current} -> check_pr(workspace_path, current)
+        _ -> check_pr(workspace_path, branch)
+      end
+
+    pr_result =
+      if !pr_result[:exists] and branch != run_context[:identifier] do
+        check_pr(workspace_path, run_context[:identifier])
+      else
+        pr_result
+      end
+
     ci_status = check_ci(workspace_path, pr_result[:number])
     {files, lines} = check_diff(workspace_path)
     pushed = check_branch_pushed(workspace_path, branch)
@@ -92,6 +108,24 @@ defmodule SymphonyElixir.Evaluator do
     error ->
       Logger.warning("Evaluation failed for run #{run_id}: #{Exception.message(error)}")
       {:error, error}
+  end
+
+  @doc """
+  Returns a list of human-readable descriptions of failing checks from an evaluation.
+  """
+  @spec failing_checks(evaluation()) :: [String.t()]
+  def failing_checks(eval) do
+    checks = [
+      {eval.pr_created, "PR not created"},
+      {eval.ci_status == "passed", "CI not passed"},
+      {eval.tests_written, "No tests written"},
+      {eval.evidence_posted, "No evidence posted"},
+      {eval.workpad_updated, "Workpad not updated"},
+      {eval.files_changed > 0, "No code changes"},
+      {eval.branch_pushed, "Branch not pushed"}
+    ]
+
+    for {passing, label} <- checks, !passing, do: label
   end
 
   # ---------------------------------------------------------------------------
@@ -253,4 +287,50 @@ defmodule SymphonyElixir.Evaluator do
   end
 
   defp safe_arg(_), do: ""
+
+  defp detect_current_branch(nil), do: {:error, :no_workspace}
+
+  defp detect_current_branch(workspace_path) do
+    case run_in_workspace(workspace_path, "git branch --show-current 2>/dev/null") do
+      {:ok, output} ->
+        branch = String.trim(output)
+        if branch != "", do: {:ok, branch}, else: {:error, :no_branch}
+
+      _ ->
+        {:error, :no_branch}
+    end
+  end
+
+  # Resolve the actual working directory. Pool-based workspaces contain a
+  # `.symphony_slot` file that points to the real git repo directory.
+  defp resolve_workspace_path(nil), do: nil
+
+  defp resolve_workspace_path(path) do
+    slot_file = Path.join(path, ".symphony_slot")
+
+    if File.exists?(slot_file) do
+      case File.read(slot_file) do
+        {:ok, content} ->
+          case Regex.run(~r/DIRECTORY=(.+)/, content) do
+            [_, dir] ->
+              resolved = String.trim(dir)
+
+              if File.dir?(resolved) do
+                Logger.info("Evaluator: resolved workspace #{path} -> #{resolved}")
+                resolved
+              else
+                path
+              end
+
+            _ ->
+              path
+          end
+
+        _ ->
+          path
+      end
+    else
+      path
+    end
+  end
 end

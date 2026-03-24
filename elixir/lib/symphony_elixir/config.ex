@@ -54,6 +54,7 @@ defmodule SymphonyElixir.Config do
   @default_observability_refresh_ms 1_000
   @default_observability_render_interval_ms 16
   @default_server_host "127.0.0.1"
+  @default_escalation_eval_score_threshold 60
   @workflow_options_schema NimbleOptions.new!(
                              tracker: [
                                type: :map,
@@ -236,6 +237,18 @@ defmodule SymphonyElixir.Config do
                                keys: [
                                  port: [type: {:or, [:non_neg_integer, nil]}, default: nil],
                                  host: [type: :string, default: @default_server_host]
+                               ]
+                             ],
+                             escalation: [
+                               type: :map,
+                               default: %{},
+                               keys: [
+                                 eval_score_threshold: [
+                                   type: :integer,
+                                   default: @default_escalation_eval_score_threshold
+                                 ],
+                                 webhook_url: [type: {:or, [:string, nil]}, default: nil],
+                                 needs_human_state: [type: {:or, [:string, nil]}, default: nil]
                                ]
                              ]
                            )
@@ -582,6 +595,23 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:server, :host])
   end
 
+  # Escalation config accessors
+
+  @spec escalation_eval_score_threshold() :: integer()
+  def escalation_eval_score_threshold do
+    get_in(validated_workflow_options(), [:escalation, :eval_score_threshold])
+  end
+
+  @spec escalation_webhook_url() :: String.t() | nil
+  def escalation_webhook_url do
+    get_in(validated_workflow_options(), [:escalation, :webhook_url])
+  end
+
+  @spec escalation_needs_human_state() :: String.t() | nil
+  def escalation_needs_human_state do
+    get_in(validated_workflow_options(), [:escalation, :needs_human_state])
+  end
+
   @spec validate!() :: :ok | {:error, term()}
   def validate! do
     with {:ok, _workflow} <- current_workflow(),
@@ -692,7 +722,8 @@ defmodule SymphonyElixir.Config do
       claude: extract_claude_options(section_map(config, "claude")),
       hooks: extract_hooks_options(section_map(config, "hooks")),
       observability: extract_observability_options(section_map(config, "observability")),
-      server: extract_server_options(section_map(config, "server"))
+      server: extract_server_options(section_map(config, "server")),
+      escalation: extract_escalation_options(section_map(config, "escalation"))
     }
   end
 
@@ -787,6 +818,13 @@ defmodule SymphonyElixir.Config do
     %{}
     |> put_if_present(:port, non_negative_integer_value(Map.get(section, "port")))
     |> put_if_present(:host, scalar_string_value(Map.get(section, "host")))
+  end
+
+  defp extract_escalation_options(section) do
+    %{}
+    |> put_if_present(:eval_score_threshold, integer_value(Map.get(section, "eval_score_threshold")))
+    |> put_if_present(:webhook_url, scalar_string_value(Map.get(section, "webhook_url")))
+    |> put_if_present(:needs_human_state, scalar_string_value(Map.get(section, "needs_human_state")))
   end
 
   defp section_map(config, key) do

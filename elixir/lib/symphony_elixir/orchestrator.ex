@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{Config, Evaluator, History, PhaseJudge, StatusDashboard, Suitability, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Evaluator, History, Notifier, PhaseJudge, StatusDashboard, Suitability, Tracker, Workspace}
   alias SymphonyElixir.Claude.StreamParser
   alias SymphonyElixir.Linear.Issue
 
@@ -102,7 +102,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
-        state = record_completed_history(state, running_entry, reason)
+        {state, eval_result} = record_completed_history(state, running_entry, reason)
         session_id = running_entry_session_id(running_entry)
 
         state =
@@ -112,9 +112,14 @@ defmodule SymphonyElixir.Orchestrator do
 
               case PhaseJudge.assess(running_entry) do
                 :done ->
-                  Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PhaseJudge says done")
-
-                  complete_issue(state, issue_id)
+                  maybe_gate_on_eval_score(
+                    state,
+                    issue_id,
+                    session_id,
+                    running_entry,
+                    eval_result,
+                    continuation_count
+                  )
 
                 {:retask, missing_phases, completed_phases} ->
                   cond do
@@ -122,6 +127,13 @@ defmodule SymphonyElixir.Orchestrator do
                       Logger.warning(
                         "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching (missing: #{inspect(missing_phases)})"
                       )
+
+                      Notifier.notify(:max_continuations_exhausted, %{
+                        issue_id: issue_id,
+                        identifier: running_entry.identifier,
+                        missing_phases: missing_phases,
+                        continuation_count: continuation_count
+                      })
 
                       complete_issue(state, issue_id)
 
@@ -174,6 +186,19 @@ defmodule SymphonyElixir.Orchestrator do
         # Record phase transition events
         record_phase_transition_events(running_entry, updated_running_entry, issue_id)
 
+        # Detect SYMPHONY_NEEDS_HELP marker
+        raw_event = Map.get(update, :raw)
+        needs_help_message = if raw_event, do: StreamParser.extract_needs_help(raw_event)
+        already_flagged = Map.get(running_entry, :needs_human, false)
+
+        updated_running_entry =
+          if needs_help_message && !already_flagged do
+            send(self(), {:agent_needs_help, issue_id, needs_help_message})
+            Map.merge(updated_running_entry, %{needs_human: true, needs_human_message: needs_help_message})
+          else
+            updated_running_entry
+          end
+
         state =
           state
           |> apply_codex_token_delta(token_delta)
@@ -185,6 +210,52 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   def handle_info({:codex_worker_update, _issue_id, _update}, state), do: {:noreply, state}
+
+  def handle_info({:agent_needs_help, issue_id, message}, %{running: running} = state) do
+    case Map.get(running, issue_id) do
+      nil ->
+        {:noreply, state}
+
+      running_entry ->
+        identifier = Map.get(running_entry, :identifier, issue_id)
+        session_id = running_entry_session_id(running_entry)
+
+        Logger.warning("Agent needs help: issue_id=#{issue_id} identifier=#{identifier} session_id=#{session_id}; message=#{message}")
+
+        # Notify via Linear comment and webhook
+        Notifier.notify(:needs_human, %{
+          issue_id: issue_id,
+          identifier: identifier,
+          help_message: message
+        })
+
+        # Move issue to review state if configured
+        needs_human_state = Config.escalation_needs_human_state()
+
+        if is_binary(needs_human_state) do
+          case Tracker.update_issue_state(issue_id, needs_human_state) do
+            :ok ->
+              Logger.info("Moved issue #{identifier} to state '#{needs_human_state}'")
+
+            {:error, reason} ->
+              Logger.warning("Failed to move issue #{identifier} to '#{needs_human_state}': #{inspect(reason)}")
+          end
+        end
+
+        # Record escalation in history
+        run_id = Map.get(running_entry, :history_run_id)
+
+        if is_binary(run_id) do
+          History.record_escalation(run_id, "needs_human", message)
+        end
+
+        # Terminate the agent
+        state = terminate_running_issue(state, issue_id, false)
+
+        notify_dashboard()
+        {:noreply, state}
+    end
+  end
 
   def handle_info({:retry_issue, issue_id}, state) do
     result =
@@ -450,6 +521,13 @@ defmodule SymphonyElixir.Orchestrator do
       session_id = running_entry_session_id(running_entry)
 
       Logger.warning("Issue stalled: issue_id=#{issue_id} issue_identifier=#{identifier} session_id=#{session_id}; #{stall_reason}; restarting with backoff")
+
+      Notifier.notify(:agent_stalled, %{
+        issue_id: issue_id,
+        identifier: identifier,
+        stall_reason: stall_reason,
+        session_id: session_id
+      })
 
       next_attempt = next_retry_attempt_from_running(running_entry)
 
@@ -822,6 +900,13 @@ defmodule SymphonyElixir.Orchestrator do
     identifier = metadata[:identifier] || Map.get(previous_retry, :identifier) || issue_id
 
     Logger.warning("Max failure retries (#{Config.max_failure_retries()}) exhausted for issue_id=#{issue_id} issue_identifier=#{identifier}; stopping")
+
+    Notifier.notify(:max_failure_retries_exhausted, %{
+      issue_id: issue_id,
+      identifier: identifier,
+      attempt: next_attempt,
+      max_retries: Config.max_failure_retries()
+    })
 
     state = complete_issue(state, issue_id)
     record_max_retries_event(state, issue_id, identifier, next_attempt)
@@ -1386,12 +1471,12 @@ defmodule SymphonyElixir.Orchestrator do
       }
     }
 
-    record_completion_to_history(running_entry, outcome, reason, now)
+    eval_result = record_completion_to_history(running_entry, outcome, reason, now)
 
-    %{state | completed_history: [summary | state.completed_history]}
+    {%{state | completed_history: [summary | state.completed_history]}, eval_result}
   end
 
-  defp record_completed_history(state, _running_entry, _reason), do: state
+  defp record_completed_history(state, _running_entry, _reason), do: {state, nil}
 
   defp record_dispatch_to_history(issue, attempt, now) do
     attrs = %{
@@ -1447,24 +1532,79 @@ defmodule SymphonyElixir.Orchestrator do
       # Record completion, then run evaluation
       case History.record_completion(run_id, attrs) do
         {:ok, _run} ->
-          run_context = %{
-            issue_id: Map.get(running_entry, :issue, %{}) |> Map.get(:id),
-            branch_name: Map.get(running_entry, :issue, %{}) |> Map.get(:branch_name),
-            identifier: Map.get(running_entry, :identifier)
-          }
-
-          identifier = running_entry[:identifier]
-          safe_id = if identifier, do: String.replace(identifier, ~r/[^a-zA-Z0-9_\-]/, ""), else: nil
-          workspace_path = if safe_id, do: Path.join(Config.workspace_root(), safe_id), else: nil
-          Evaluator.evaluate_and_record(run_id, run_context, workspace_path)
+          run_evaluation(running_entry, run_id)
 
         {:error, reason} ->
           Logger.warning("Failed to record completion to history: #{inspect(reason)}")
+          nil
       end
     end
   rescue
     error ->
       Logger.warning("Failed to record completion to history: #{Exception.message(error)}")
+  end
+
+  defp maybe_gate_on_eval_score(state, issue_id, session_id, running_entry, eval_result, continuation_count) do
+    threshold = Config.escalation_eval_score_threshold()
+    score = if eval_result, do: Map.get(eval_result, :score, 100), else: 100
+
+    cond do
+      score >= threshold ->
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PhaseJudge says done, eval score #{score} >= #{threshold}")
+        complete_issue(state, issue_id)
+
+      continuation_count > @max_continuations ->
+        Logger.warning("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; eval score #{score} < #{threshold} but max continuations reached")
+
+        failing = Evaluator.failing_checks(eval_result)
+
+        Notifier.notify(:low_eval_score, %{
+          issue_id: issue_id,
+          identifier: running_entry.identifier,
+          score: score,
+          threshold: threshold,
+          failing_checks: failing
+        })
+
+        complete_issue(state, issue_id)
+
+      true ->
+        failing = Evaluator.failing_checks(eval_result)
+
+        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; eval score #{score} < #{threshold}, retasking for: #{inspect(failing)}")
+
+        state
+        |> complete_issue(issue_id)
+        |> schedule_issue_retry(issue_id, continuation_count, %{
+          identifier: running_entry.identifier,
+          delay_type: :continuation,
+          continuation_count: continuation_count,
+          retask_phases: failing,
+          completed_phases: PhaseJudge.phases_in_order(),
+          eval_retask: true
+        })
+    end
+  end
+
+  defp run_evaluation(running_entry, run_id) do
+    run_context = %{
+      issue_id: Map.get(running_entry, :issue, %{}) |> Map.get(:id),
+      branch_name: Map.get(running_entry, :issue, %{}) |> Map.get(:branch_name),
+      identifier: Map.get(running_entry, :identifier)
+    }
+
+    identifier = running_entry[:identifier]
+    safe_id = if identifier, do: String.replace(identifier, ~r/[^a-zA-Z0-9_\-]/, ""), else: nil
+    workspace_path = if safe_id, do: Path.join(Config.workspace_root(), safe_id), else: nil
+
+    case Evaluator.evaluate_and_record(run_id, run_context, workspace_path) do
+      {:ok, eval} -> eval
+      _ -> nil
+    end
+  rescue
+    error ->
+      Logger.warning("Evaluation failed: #{Exception.message(error)}")
+      nil
   end
 
   defp categorize_error(:normal), do: %{message: nil, category: nil}

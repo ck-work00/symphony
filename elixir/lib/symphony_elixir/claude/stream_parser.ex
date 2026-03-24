@@ -5,6 +5,11 @@ defmodule SymphonyElixir.Claude.StreamParser do
 
   require Logger
 
+  # Match "SYMPHONY_PHASE: Name" markers
+  @symphony_phase_regex ~r/SYMPHONY_PHASE:\s*(.+)/
+  # Match "SYMPHONY_NEEDS_HELP: description" markers
+  @symphony_needs_help_regex ~r/SYMPHONY_NEEDS_HELP:\s*(.+)/
+
   @doc """
   Parse a single JSON line from stdout. Returns {:ok, event_map} or {:error, reason}.
   """
@@ -113,6 +118,32 @@ defmodule SymphonyElixir.Claude.StreamParser do
 
   def extract_phase(_event), do: nil
 
+  @doc """
+  Extract a SYMPHONY_NEEDS_HELP message from an event.
+
+  Returns the help description (trimmed, max 500 chars) or nil.
+  """
+  @spec extract_needs_help(map()) :: String.t() | nil
+  def extract_needs_help(%{event_type: :assistant} = event) do
+    event |> extract_text_content() |> detect_needs_help()
+  end
+
+  def extract_needs_help(%{event_type: :tool_result} = event) do
+    event |> extract_tool_result_text() |> detect_needs_help()
+  end
+
+  def extract_needs_help(_event), do: nil
+
+  defp detect_needs_help(""), do: nil
+  defp detect_needs_help(text) when not is_binary(text), do: nil
+
+  defp detect_needs_help(text) do
+    case Regex.run(@symphony_needs_help_regex, text) do
+      [_, message] -> message |> String.trim() |> String.slice(0, 500)
+      nil -> nil
+    end
+  end
+
   defp extract_text_content(event) do
     message = Map.get(event, "message") || Map.get(event, :message) || %{}
     content = Map.get(message, "content") || Map.get(message, :content) || []
@@ -126,9 +157,6 @@ defmodule SymphonyElixir.Claude.StreamParser do
     end)
     |> Enum.join("\n")
   end
-
-  # Match "SYMPHONY_PHASE: Name" markers
-  @symphony_phase_regex ~r/SYMPHONY_PHASE:\s*(.+)/
 
   defp detect_symphony_phase(""), do: nil
 

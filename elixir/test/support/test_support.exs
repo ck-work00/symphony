@@ -122,6 +122,9 @@ defmodule SymphonyElixir.TestSupport do
           observability_render_interval_ms: 16,
           server_port: nil,
           server_host: nil,
+          escalation_eval_score_threshold: nil,
+          escalation_webhook_url: nil,
+          escalation_needs_human_state: nil,
           prompt: @workflow_prompt
         ],
         overrides
@@ -157,6 +160,9 @@ defmodule SymphonyElixir.TestSupport do
     observability_render_interval_ms = Keyword.get(config, :observability_render_interval_ms)
     server_port = Keyword.get(config, :server_port)
     server_host = Keyword.get(config, :server_host)
+    escalation_eval_score_threshold = Keyword.get(config, :escalation_eval_score_threshold)
+    escalation_webhook_url = Keyword.get(config, :escalation_webhook_url)
+    escalation_needs_human_state = Keyword.get(config, :escalation_needs_human_state)
     prompt = Keyword.get(config, :prompt)
 
     sections =
@@ -190,6 +196,7 @@ defmodule SymphonyElixir.TestSupport do
         hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, hook_timeout_ms),
         observability_yaml(observability_enabled, observability_refresh_ms, observability_render_interval_ms),
         server_yaml(server_port, server_host),
+        escalation_yaml(escalation_eval_score_threshold, escalation_webhook_url, escalation_needs_human_state),
         "---",
         prompt
       ]
@@ -242,6 +249,19 @@ defmodule SymphonyElixir.TestSupport do
       "  refresh_ms: #{yaml_value(refresh_ms)}",
       "  render_interval_ms: #{yaml_value(render_interval_ms)}"
     ]
+    |> Enum.join("\n")
+  end
+
+  defp escalation_yaml(nil, nil, nil), do: nil
+
+  defp escalation_yaml(threshold, webhook_url, needs_human_state) do
+    [
+      "escalation:",
+      threshold && "  eval_score_threshold: #{yaml_value(threshold)}",
+      webhook_url && "  webhook_url: #{yaml_value(webhook_url)}",
+      needs_human_state && "  needs_human_state: #{yaml_value(needs_human_state)}"
+    ]
+    |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 

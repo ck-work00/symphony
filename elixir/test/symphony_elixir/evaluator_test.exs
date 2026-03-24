@@ -39,4 +39,62 @@ defmodule SymphonyElixir.EvaluatorTest do
       assert eval.score >= 0 and eval.score <= 100
     end
   end
+
+  describe "failing_checks/1" do
+    test "returns all checks when everything fails" do
+      eval = %{
+        pr_created: false,
+        ci_status: "none",
+        tests_written: false,
+        evidence_posted: false,
+        workpad_updated: false,
+        files_changed: 0,
+        branch_pushed: false,
+        score: 0
+      }
+
+      checks = Evaluator.failing_checks(eval)
+      assert "PR not created" in checks
+      assert "CI not passed" in checks
+      assert "No tests written" in checks
+      assert "No evidence posted" in checks
+      assert "Workpad not updated" in checks
+      assert "No code changes" in checks
+      assert "Branch not pushed" in checks
+      assert length(checks) == 7
+    end
+
+    test "returns empty list when everything passes" do
+      eval = %{
+        pr_created: true,
+        ci_status: "passed",
+        tests_written: true,
+        evidence_posted: true,
+        workpad_updated: true,
+        files_changed: 5,
+        branch_pushed: true,
+        score: 100
+      }
+
+      assert Evaluator.failing_checks(eval) == []
+    end
+
+    test "returns only failing checks for partial success" do
+      eval = %{
+        pr_created: true,
+        ci_status: "failed",
+        tests_written: true,
+        evidence_posted: false,
+        workpad_updated: true,
+        files_changed: 3,
+        branch_pushed: true,
+        score: 55
+      }
+
+      checks = Evaluator.failing_checks(eval)
+      assert "CI not passed" in checks
+      assert "No evidence posted" in checks
+      assert length(checks) == 2
+    end
+  end
 end

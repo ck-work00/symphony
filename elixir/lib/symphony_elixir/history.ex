@@ -46,6 +46,27 @@ defmodule SymphonyElixir.History do
     end
   end
 
+  @spec record_escalation(String.t(), String.t(), String.t() | nil) ::
+          {:ok, Run.t()} | {:error, term()}
+  def record_escalation(run_id, escalation_type, message \\ nil) when is_binary(run_id) do
+    case Repo.get(Run, run_id) do
+      nil ->
+        {:error, :not_found}
+
+      run ->
+        attrs = %{
+          escalation_type: escalation_type,
+          escalated_at: DateTime.utc_now(),
+          needs_human: escalation_type == "needs_human",
+          needs_human_message: message
+        }
+
+        run
+        |> Run.completion_changeset(attrs)
+        |> Repo.update()
+    end
+  end
+
   @spec record_event(map()) :: {:ok, RunEvent.t()} | {:error, Ecto.Changeset.t()}
   def record_event(attrs) do
     attrs

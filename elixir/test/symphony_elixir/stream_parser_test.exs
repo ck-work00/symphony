@@ -151,4 +151,43 @@ defmodule SymphonyElixir.Claude.StreamParserTest do
       assert StreamParser.extract_pr_url(event) == nil
     end
   end
+
+  describe "extract_needs_help/1" do
+    test "extracts help message from assistant text" do
+      event = assistant_text_event("SYMPHONY_NEEDS_HELP: I cannot find the database schema for this table")
+      assert StreamParser.extract_needs_help(event) == "I cannot find the database schema for this table"
+    end
+
+    test "trims whitespace from help message" do
+      event = assistant_text_event("SYMPHONY_NEEDS_HELP:   lots of spaces   ")
+      assert StreamParser.extract_needs_help(event) == "lots of spaces"
+    end
+
+    test "truncates message at 500 characters" do
+      long_message = String.duplicate("a", 600)
+      event = assistant_text_event("SYMPHONY_NEEDS_HELP: #{long_message}")
+      result = StreamParser.extract_needs_help(event)
+      assert String.length(result) == 500
+    end
+
+    test "returns nil when marker is absent" do
+      event = assistant_text_event("Just working on the code, no problems here.")
+      assert StreamParser.extract_needs_help(event) == nil
+    end
+
+    test "returns nil for non-assistant events" do
+      event = %{"content" => "SYMPHONY_NEEDS_HELP: stuck"} |> Map.put(:event_type, :system)
+      assert StreamParser.extract_needs_help(event) == nil
+    end
+
+    test "extracts help message from tool result stdout" do
+      event = tool_result_event("SYMPHONY_NEEDS_HELP: CI is broken and I cannot fix it")
+      assert StreamParser.extract_needs_help(event) == "CI is broken and I cannot fix it"
+    end
+
+    test "returns nil for tool result without marker" do
+      event = tool_result_event("All tests passed")
+      assert StreamParser.extract_needs_help(event) == nil
+    end
+  end
 end

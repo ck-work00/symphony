@@ -51,6 +51,12 @@ defmodule SymphonyElixir.History.Run do
     field(:eval_workpad_updated, :boolean)
     field(:eval_tests_written, :boolean)
 
+    # Escalation
+    field(:escalation_type, :string)
+    field(:escalated_at, :utc_datetime_usec)
+    field(:needs_human, :boolean, default: false)
+    field(:needs_human_message, :string)
+
     # Error context
     field(:error_message, :string)
     field(:error_category, :string)
@@ -70,6 +76,7 @@ defmodule SymphonyElixir.History.Run do
     eval_score eval_pr_created eval_pr_url eval_ci_status
     eval_files_changed eval_lines_changed eval_branch_pushed
     eval_evidence_posted eval_workpad_updated eval_tests_written
+    escalation_type escalated_at needs_human needs_human_message
     error_message error_category
   )a
 

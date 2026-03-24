@@ -53,6 +53,13 @@ SYMPHONY_PHASE: <Phase Name>
 
 Valid phases: Investigate, Implement, Test, Ship, Share Evidence
 
+To signal that you need human help, output this on its own line and STOP:
+```
+SYMPHONY_NEEDS_HELP: <description of what you're stuck on>
+```
+
+Use this when you are blocked by something you cannot resolve (missing permissions, unclear requirements, infrastructure issues, etc). The orchestrator will stop your session and notify the team.
+
 ## Guardrails
 
 - Do NOT modify files outside the scope of the issue.

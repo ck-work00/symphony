@@ -42,13 +42,16 @@ defmodule SymphonyElixir.Notifier do
     :ok
   end
 
+  # These events are operational noise — log and webhook only, no Linear comment.
+  @webhook_only_events [:agent_stalled, :max_failure_retries_exhausted, :max_continuations_exhausted]
+
   defp do_notify(event_type, details, opts) do
     issue_id = Map.get(details, :issue_id)
     comment_fn = Keyword.get(opts, :comment_fn, &Tracker.create_comment/2)
     webhook_fn = Keyword.get(opts, :webhook_fn, &send_webhook/2)
 
-    # Post Linear comment
-    if is_binary(issue_id) do
+    # Post Linear comment (skip for operational events)
+    if is_binary(issue_id) and event_type not in @webhook_only_events do
       body = format_linear_comment(event_type, details)
 
       case comment_fn.(issue_id, body) do
@@ -58,6 +61,8 @@ defmodule SymphonyElixir.Notifier do
         {:error, reason} ->
           Logger.warning("Notifier: failed to post comment for #{event_type}: #{inspect(reason)}")
       end
+    else
+      Logger.info("Notifier: #{event_type} for #{details[:identifier] || issue_id} (webhook only)")
     end
 
     # Send webhook

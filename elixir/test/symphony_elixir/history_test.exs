@@ -187,7 +187,7 @@ defmodule SymphonyElixir.HistoryTest do
       issue_labels: ["bug", "symphony"],
       started_at: DateTime.utc_now(),
       agent_backend: "claude",
-      project_slug: "test-project"
+      filter_source: "filter"
     })
   end
 

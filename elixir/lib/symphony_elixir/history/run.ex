@@ -69,7 +69,7 @@ defmodule SymphonyElixir.History.Run do
   @required_fields ~w(issue_id issue_identifier started_at)a
   @optional_fields ~w(
     issue_title issue_priority issue_labels
-    filter_source project_slug
+    filter_source
     finished_at outcome agent_backend session_id workspace_path
     turns_used retry_attempt input_tokens output_tokens total_tokens wall_clock_ms
     final_phase

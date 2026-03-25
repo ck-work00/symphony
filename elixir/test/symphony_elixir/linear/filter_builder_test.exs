@@ -4,16 +4,6 @@ defmodule SymphonyElixir.Linear.FilterBuilderTest do
   alias SymphonyElixir.Linear.FilterBuilder
 
   describe "build/2" do
-    test "builds project filter from project key" do
-      filter = FilterBuilder.build(%{project: "my-slug"})
-      assert filter == %{"project" => %{"slugId" => %{"eq" => "my-slug"}}}
-    end
-
-    test "builds project filter from project_slug key" do
-      filter = FilterBuilder.build(%{project_slug: "my-slug"})
-      assert filter == %{"project" => %{"slugId" => %{"eq" => "my-slug"}}}
-    end
-
     test "builds label include filter" do
       filter = FilterBuilder.build(%{labels: %{include: ["symphony", "bug"]}})
       assert filter == %{"labels" => %{"name" => %{"in" => ["symphony", "bug"]}}}
@@ -40,22 +30,22 @@ defmodule SymphonyElixir.Linear.FilterBuilderTest do
     end
 
     test "combines multiple filters with AND" do
-      filter = FilterBuilder.build(%{project: "my-slug", labels: ["symphony"]})
+      filter = FilterBuilder.build(%{labels: ["symphony"], teams: ["ENG"]})
 
       assert %{"and" => conditions} = filter
       assert length(conditions) == 2
 
       assert Enum.any?(conditions, fn c ->
-               c == %{"project" => %{"slugId" => %{"eq" => "my-slug"}}}
+               c == %{"labels" => %{"name" => %{"in" => ["symphony"]}}}
              end)
 
       assert Enum.any?(conditions, fn c ->
-               c == %{"labels" => %{"name" => %{"in" => ["symphony"]}}}
+               c == %{"team" => %{"key" => %{"in" => ["ENG"]}}}
              end)
     end
 
     test "adds state filter when state_names provided" do
-      filter = FilterBuilder.build(%{project: "slug"}, ["Todo", "In Progress"])
+      filter = FilterBuilder.build(%{labels: ["symphony"]}, ["Todo", "In Progress"])
 
       assert %{"and" => conditions} = filter
 
@@ -87,11 +77,6 @@ defmodule SymphonyElixir.Linear.FilterBuilderTest do
       assert FilterBuilder.build(%{}) == %{}
     end
 
-    test "handles string keys" do
-      filter = FilterBuilder.build(%{"project" => "my-slug"})
-      assert filter == %{"project" => %{"slugId" => %{"eq" => "my-slug"}}}
-    end
-
     test "handles string label keys" do
       filter = FilterBuilder.build(%{"labels" => %{"include" => ["symphony"]}})
       assert filter == %{"labels" => %{"name" => %{"in" => ["symphony"]}}}
@@ -99,14 +84,6 @@ defmodule SymphonyElixir.Linear.FilterBuilderTest do
   end
 
   describe "valid?/1" do
-    test "true when project is set" do
-      assert FilterBuilder.valid?(%{project: "slug"})
-    end
-
-    test "true when project_slug is set" do
-      assert FilterBuilder.valid?(%{project_slug: "slug"})
-    end
-
     test "true when labels include is set" do
       assert FilterBuilder.valid?(%{labels: ["symphony"]})
     end

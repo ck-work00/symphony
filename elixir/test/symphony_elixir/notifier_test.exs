@@ -65,7 +65,7 @@ defmodule SymphonyElixir.NotifierTest do
   end
 
   describe "notify_sync/3" do
-    test "calls comment_fn with issue_id and formatted body" do
+    test "calls comment_fn for actionable events (low_eval_score)" do
       test_pid = self()
 
       comment_fn = fn issue_id, body ->
@@ -74,19 +74,45 @@ defmodule SymphonyElixir.NotifierTest do
       end
 
       Notifier.notify_sync(
-        :max_continuations_exhausted,
+        :low_eval_score,
         %{
           issue_id: "issue-123",
           identifier: "GEA-456",
-          missing_phases: ["Test"],
-          continuation_count: 5
+          score: 40,
+          threshold: 60,
+          failing_checks: ["Tests"]
         },
         comment_fn: comment_fn
       )
 
       assert_received {:comment, "issue-123", body}
-      assert body =~ "Agent Gave Up"
-      assert body =~ "Test"
+      assert body =~ "Low Quality Score"
+      assert body =~ "Tests"
+    end
+
+    test "skips comment for operational events (stalled, max retries)" do
+      test_pid = self()
+
+      comment_fn = fn id, body ->
+        send(test_pid, {:comment, id, body})
+        :ok
+      end
+
+      Notifier.notify_sync(
+        :agent_stalled,
+        %{issue_id: "issue-789", identifier: "GEA-101", stall_reason: "phase stuck"},
+        comment_fn: comment_fn
+      )
+
+      refute_received {:comment, _, _}
+
+      Notifier.notify_sync(
+        :max_failure_retries_exhausted,
+        %{issue_id: "issue-789", identifier: "GEA-101", attempt: 4, max_retries: 3},
+        comment_fn: comment_fn
+      )
+
+      refute_received {:comment, _, _}
     end
 
     test "calls webhook_fn when webhook URL is configured" do
@@ -102,21 +128,20 @@ defmodule SymphonyElixir.NotifierTest do
         :ok
       end
 
-      # Webhook only fires if Config.escalation_webhook_url() returns non-nil.
-      # This test verifies the function injection path works correctly.
+      # Use needs_human which still posts comments
       Notifier.notify_sync(
-        :agent_stalled,
+        :needs_human,
         %{
           issue_id: "issue-789",
           identifier: "GEA-101",
-          stall_reason: "phase stuck"
+          help_message: "stuck on auth"
         },
         comment_fn: comment_fn,
         webhook_fn: webhook_fn
       )
 
       assert_received {:comment, "issue-789", body}
-      assert body =~ "Stalled"
+      assert body =~ "Needs Help"
     end
 
     test "skips comment when issue_id is nil" do

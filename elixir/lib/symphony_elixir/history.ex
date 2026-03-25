@@ -111,6 +111,47 @@ defmodule SymphonyElixir.History do
   end
 
   # ---------------------------------------------------------------------------
+  # Issue-level summary (for PhaseJudge)
+  # ---------------------------------------------------------------------------
+
+  @spec issue_summary(String.t()) :: map()
+  def issue_summary(issue_identifier) do
+    runs = runs_for_issue(issue_identifier)
+    run_ids = Enum.map(runs, & &1.id)
+
+    events =
+      if run_ids != [] do
+        RunEvent
+        |> where([e], e.run_id in ^run_ids)
+        |> order_by([e], asc: e.timestamp)
+        |> Repo.all()
+      else
+        []
+      end
+
+    %{
+      total_runs: length(runs),
+      runs: runs,
+      events: events,
+      has_pr: Enum.any?(runs, &(&1.eval_pr_url != nil)),
+      pr_url: runs |> Enum.find_value(& &1.eval_pr_url),
+      has_evidence: Enum.any?(runs, &(&1.eval_evidence_posted == true)),
+      has_tests: Enum.any?(runs, &(&1.eval_tests_written == true)),
+      phases_seen: events |> extract_phases_from_events(),
+      screenshots: events |> Enum.filter(&(&1.event_type == "screenshot_captured")),
+      latest_outcome: runs |> List.first() |> then(fn r -> r && r.outcome end)
+    }
+  end
+
+  defp extract_phases_from_events(events) do
+    events
+    |> Enum.filter(&(&1.event_type == "phase_change"))
+    |> Enum.map(fn e -> Map.get(e.payload || %{}, "to") end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  # ---------------------------------------------------------------------------
   # Aggregate metrics
   # ---------------------------------------------------------------------------
 

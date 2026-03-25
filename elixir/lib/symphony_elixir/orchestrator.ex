@@ -112,45 +112,35 @@ defmodule SymphonyElixir.Orchestrator do
 
               case PhaseJudge.assess(running_entry) do
                 :done ->
-                  maybe_gate_on_eval_score(
-                    state,
-                    issue_id,
-                    session_id,
-                    running_entry,
-                    eval_result,
-                    continuation_count
-                  )
+                  score = if eval_result, do: Map.get(eval_result, :score), else: nil
+                  Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PhaseJudge says done, eval score #{score || "n/a"}")
+                  complete_issue(state, issue_id)
+
+                :max_runs_reached ->
+                  Logger.warning("Agent task for issue_id=#{issue_id} reached max total runs, stopping")
+                  complete_issue(state, issue_id)
 
                 {:retask, missing_phases, completed_phases} ->
-                  cond do
-                    continuation_count > @max_continuations ->
-                      Logger.warning(
-                        "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching (missing: #{inspect(missing_phases)})"
-                      )
+                  if continuation_count > @max_continuations do
+                    Logger.warning(
+                      "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching (missing: #{inspect(missing_phases)})"
+                    )
 
-                      Notifier.notify(:max_continuations_exhausted, %{
-                        issue_id: issue_id,
-                        identifier: running_entry.identifier,
-                        missing_phases: missing_phases,
-                        continuation_count: continuation_count
-                      })
+                    complete_issue(state, issue_id)
+                  else
+                    Logger.info(
+                      "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; retasking for missing phases: #{inspect(missing_phases)} (#{continuation_count}/#{@max_continuations})"
+                    )
 
-                      complete_issue(state, issue_id)
-
-                    true ->
-                      Logger.info(
-                        "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; retasking for missing phases: #{inspect(missing_phases)} (#{continuation_count}/#{@max_continuations})"
-                      )
-
-                      state
-                      |> complete_issue(issue_id)
-                      |> schedule_issue_retry(issue_id, continuation_count, %{
-                        identifier: running_entry.identifier,
-                        delay_type: :continuation,
-                        continuation_count: continuation_count,
-                        retask_phases: missing_phases,
-                        completed_phases: completed_phases
-                      })
+                    state
+                    |> complete_issue(issue_id)
+                    |> schedule_issue_retry(issue_id, continuation_count, %{
+                      identifier: running_entry.identifier,
+                      delay_type: :continuation,
+                      continuation_count: continuation_count,
+                      retask_phases: missing_phases,
+                      completed_phases: completed_phases
+                    })
                   end
               end
 
@@ -294,12 +284,8 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.error("Linear API token missing in WORKFLOW.md")
         state
 
-      {:error, :missing_linear_project_slug} ->
-        Logger.error("Linear project slug missing in WORKFLOW.md")
-        state
-
       {:error, :missing_linear_filter} ->
-        Logger.error("No Linear targeting configured in WORKFLOW.md (need project_slug or filter)")
+        Logger.error("No Linear targeting configured in WORKFLOW.md (need filter with labels or teams)")
         state
 
       {:error, :missing_tracker_kind} ->
@@ -747,6 +733,10 @@ defmodule SymphonyElixir.Orchestrator do
 
             :done ->
               Logger.info("PhaseJudge: all phases complete for #{issue_context(refreshed_issue)}, skipping dispatch")
+              complete_issue(state, refreshed_issue.id)
+
+            :max_runs_reached ->
+              Logger.warning("PhaseJudge: max runs reached for #{issue_context(refreshed_issue)}, not dispatching")
               complete_issue(state, refreshed_issue.id)
 
             {:retask, missing_phases, completed_phases} ->
@@ -1485,8 +1475,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_title: issue.title,
       issue_priority: issue.priority,
       issue_labels: issue.labels || [],
-      filter_source: "project",
-      project_slug: Config.linear_project_slug(),
+      filter_source: "filter",
       started_at: now,
       agent_backend: Config.agent_backend(),
       retry_attempt: normalize_retry_attempt(attempt) || 0
@@ -1542,48 +1531,6 @@ defmodule SymphonyElixir.Orchestrator do
   rescue
     error ->
       Logger.warning("Failed to record completion to history: #{Exception.message(error)}")
-  end
-
-  defp maybe_gate_on_eval_score(state, issue_id, session_id, running_entry, eval_result, continuation_count) do
-    threshold = Config.escalation_eval_score_threshold()
-    score = if eval_result, do: Map.get(eval_result, :score, 100), else: 100
-
-    cond do
-      score >= threshold ->
-        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PhaseJudge says done, eval score #{score} >= #{threshold}")
-        complete_issue(state, issue_id)
-
-      continuation_count > @max_continuations ->
-        Logger.warning("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; eval score #{score} < #{threshold} but max continuations reached")
-
-        failing = Evaluator.failing_checks(eval_result)
-
-        Notifier.notify(:low_eval_score, %{
-          issue_id: issue_id,
-          identifier: running_entry.identifier,
-          score: score,
-          threshold: threshold,
-          failing_checks: failing
-        })
-
-        complete_issue(state, issue_id)
-
-      true ->
-        failing = Evaluator.failing_checks(eval_result)
-
-        Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; eval score #{score} < #{threshold}, retasking for: #{inspect(failing)}")
-
-        state
-        |> complete_issue(issue_id)
-        |> schedule_issue_retry(issue_id, continuation_count, %{
-          identifier: running_entry.identifier,
-          delay_type: :continuation,
-          continuation_count: continuation_count,
-          retask_phases: failing,
-          completed_phases: PhaseJudge.phases_in_order(),
-          eval_retask: true
-        })
-    end
   end
 
   defp run_evaluation(running_entry, run_id) do

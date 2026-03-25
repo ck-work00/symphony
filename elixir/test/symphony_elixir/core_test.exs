@@ -4,7 +4,7 @@ defmodule SymphonyElixir.CoreTest do
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
-      tracker_project_slug: nil,
+      tracker_filter: nil,
       poll_interval_ms: nil,
       tracker_active_states: nil,
       tracker_terminal_states: nil,
@@ -34,13 +34,13 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
-      tracker_project_slug: nil
+      tracker_filter: nil
     )
 
     assert {:error, :missing_linear_filter} = Config.validate!()
 
     write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_project_slug: "project",
+      tracker_filter: %{"labels" => %{"include" => ["symphony-agent"]}},
       codex_command: ""
     )
 
@@ -82,7 +82,7 @@ defmodule SymphonyElixir.CoreTest do
     tracker = Map.get(config, "tracker", %{})
     assert is_map(tracker)
     assert Map.get(tracker, "kind") == "linear"
-    assert is_binary(Map.get(tracker, "project_slug"))
+    assert is_map(Map.get(tracker, "filter"))
     assert is_list(Map.get(tracker, "active_states"))
     assert is_list(Map.get(tracker, "terminal_states"))
 
@@ -107,12 +107,11 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
-      tracker_project_slug: "project",
+      tracker_filter: %{"labels" => %{"include" => ["symphony-agent"]}},
       codex_command: "/bin/sh app-server"
     )
 
     assert Config.linear_api_token() == env_api_key
-    assert Config.linear_project_slug() == "project"
     assert :ok = Config.validate!()
   end
 
@@ -125,7 +124,7 @@ defmodule SymphonyElixir.CoreTest do
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_assignee: nil,
-      tracker_project_slug: "project",
+      tracker_filter: %{"labels" => %{"include" => ["symphony-agent"]}},
       codex_command: "/bin/sh app-server"
     )
 
@@ -456,7 +455,8 @@ defmodule SymphonyElixir.CoreTest do
     assert MapSet.member?(state.completed, issue_id)
     assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
     assert is_integer(due_at_ms)
-    assert_due_in_range(due_at_ms, 500, 1_100)
+    # Continuation retry uses 30s base delay
+    assert_due_in_range(due_at_ms, 29_000, 31_000)
   end
 
   test "abnormal worker exit increments retry attempt progressively" do

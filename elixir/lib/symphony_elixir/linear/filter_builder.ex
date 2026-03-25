@@ -10,7 +10,6 @@ defmodule SymphonyElixir.Linear.FilterBuilder do
   Build a Linear IssueFilter map from the tracker filter config.
 
   Accepts a map with any combination of:
-    - `project` or `project_slug` — project slug string
     - `labels` — `%{include: [...], exclude: [...]}` or list of strings (treated as include)
     - `teams` — list of team key strings
     - `priority` — `%{max: N}` or `%{min: N}` (Linear: 1=urgent, 4=low)
@@ -24,7 +23,6 @@ defmodule SymphonyElixir.Linear.FilterBuilder do
   def build(filter_config, state_names \\ []) when is_map(filter_config) do
     filters = []
 
-    filters = maybe_add_project(filters, filter_config)
     filters = maybe_add_labels_include(filters, filter_config)
     filters = maybe_add_teams(filters, filter_config)
     filters = maybe_add_priority(filters, filter_config)
@@ -47,31 +45,11 @@ defmodule SymphonyElixir.Linear.FilterBuilder do
   """
   @spec valid?(map()) :: boolean()
   def valid?(filter_config) when is_map(filter_config) do
-    has_project?(filter_config) or
-      has_labels_include?(filter_config) or
+    has_labels_include?(filter_config) or
       has_teams?(filter_config)
   end
 
   def valid?(_), do: false
-
-  # ---------------------------------------------------------------------------
-  # Project filter
-  # ---------------------------------------------------------------------------
-
-  defp maybe_add_project(filters, config) do
-    case extract_project_slug(config) do
-      nil -> filters
-      slug -> [%{"project" => %{"slugId" => %{"eq" => slug}}} | filters]
-    end
-  end
-
-  defp extract_project_slug(%{project: slug}) when is_binary(slug) and slug != "", do: slug
-  defp extract_project_slug(%{"project" => slug}) when is_binary(slug) and slug != "", do: slug
-  defp extract_project_slug(%{project_slug: slug}) when is_binary(slug) and slug != "", do: slug
-  defp extract_project_slug(%{"project_slug" => slug}) when is_binary(slug) and slug != "", do: slug
-  defp extract_project_slug(_), do: nil
-
-  defp has_project?(config), do: extract_project_slug(config) != nil
 
   # ---------------------------------------------------------------------------
   # Label include filter

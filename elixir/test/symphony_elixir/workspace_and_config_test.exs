@@ -652,12 +652,11 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       codex_read_timeout_ms: nil,
       codex_stall_timeout_ms: nil,
       tracker_api_token: nil,
-      tracker_project_slug: nil
+      tracker_filter: nil
     )
 
     assert Config.linear_endpoint() == "https://api.linear.app/graphql"
     assert Config.linear_api_token() == nil
-    assert Config.linear_project_slug() == nil
     assert Config.workspace_root() == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert Config.max_concurrent_agents() == 10
     assert Config.codex_command() == "codex app-server"

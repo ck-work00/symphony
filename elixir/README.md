@@ -89,7 +89,10 @@ Minimal example:
 ---
 tracker:
   kind: linear
-  project_slug: "..."
+  filter:
+    labels:
+      include:
+        - symphony-agent
 workspace:
   root: ~/code/workspaces
 hooks:

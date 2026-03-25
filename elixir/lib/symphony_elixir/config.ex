@@ -63,6 +63,7 @@ defmodule SymphonyElixir.Config do
                                  kind: [type: {:or, [:string, nil]}, default: nil],
                                  endpoint: [type: :string, default: @default_linear_endpoint],
                                  api_key: [type: {:or, [:string, nil]}, default: nil],
+                                 # project_slug is deprecated — kept in schema for backward compat but unused
                                  project_slug: [type: {:or, [:string, nil]}, default: nil],
                                  filter: [type: {:or, [{:map, :any, :any}, nil]}, default: nil],
                                  assignee: [type: {:or, [:string, nil]}, default: nil],
@@ -291,29 +292,13 @@ defmodule SymphonyElixir.Config do
     |> normalize_secret_value()
   end
 
-  @spec linear_project_slug() :: String.t() | nil
-  def linear_project_slug do
-    get_in(validated_workflow_options(), [:tracker, :project_slug])
-  end
-
   @doc """
   Returns the composable filter config for Linear issue targeting.
-  Falls back to wrapping `project_slug` if no explicit filter is configured.
   """
   @spec linear_filter() :: map()
   def linear_filter do
     opts = validated_workflow_options()
-    explicit_filter = get_in(opts, [:tracker, :filter]) || %{}
-
-    if explicit_filter == %{} do
-      # Legacy: wrap project_slug into filter format
-      case get_in(opts, [:tracker, :project_slug]) do
-        slug when is_binary(slug) and slug != "" -> %{project: slug}
-        _ -> %{}
-      end
-    else
-      explicit_filter
-    end
+    get_in(opts, [:tracker, :filter]) || %{}
   end
 
   @spec linear_assignee() :: String.t() | nil
@@ -670,11 +655,7 @@ defmodule SymphonyElixir.Config do
         if SymphonyElixir.Linear.FilterBuilder.valid?(filter) do
           :ok
         else
-          if is_binary(linear_project_slug()) do
-            :ok
-          else
-            {:error, :missing_linear_filter}
-          end
+          {:error, :missing_linear_filter}
         end
 
       _ ->
@@ -732,7 +713,6 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:kind, normalize_tracker_kind(scalar_string_value(Map.get(section, "kind"))))
     |> put_if_present(:endpoint, scalar_string_value(Map.get(section, "endpoint")))
     |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
-    |> put_if_present(:project_slug, scalar_string_value(Map.get(section, "project_slug")))
     |> put_if_present(:filter, map_value(Map.get(section, "filter")))
     |> put_if_present(:assignee, scalar_string_value(Map.get(section, "assignee")))
     |> put_if_present(:active_states, csv_value(Map.get(section, "active_states")))

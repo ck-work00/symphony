@@ -35,9 +35,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
 
     socket =
       case tab do
-        "history" -> assign(socket, :history_runs, History.recent_completed(50))
-        "metrics" -> assign(socket, :metrics, load_metrics())
-        _ -> socket
+        "history" ->
+          seven_days_ago = DateTime.utc_now() |> DateTime.add(-7, :day)
+          assign(socket, :history_runs, History.list_runs(after: seven_days_ago, limit: 100))
+
+        "metrics" ->
+          assign(socket, :metrics, load_metrics())
+
+        _ ->
+          socket
       end
 
     {:noreply, socket}
@@ -254,9 +260,16 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </span>
                     </div>
                     <%= if entry[:screenshot_urls] != [] do %>
-                      <span class="state-badge" style="margin-top: 0.25rem; font-size: 0.72rem;">
-                        <%= length(entry[:screenshot_urls] || []) %> screenshot(s)
-                      </span>
+                      <div class="screenshot-thumbs">
+                        <a
+                          :for={url <- entry[:screenshot_urls] || []}
+                          href={url}
+                          target="_blank"
+                          class="screenshot-thumb"
+                        >
+                          <img src={url} />
+                        </a>
+                      </div>
                     <% end %>
                   </td>
                   <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
@@ -440,7 +453,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       <div class="section-header">
         <div>
           <h2 class="section-title">Run history</h2>
-          <p class="section-copy">All completed runs across restarts, stored in the local database.</p>
+          <p class="section-copy">All runs from the past 7 days, stored in the local database.</p>
         </div>
       </div>
 

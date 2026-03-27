@@ -1,7 +1,5 @@
 ## Step 2: Implement
 
-SYMPHONY_PHASE: Implement
-
 The branch `{{ issue.identifier | downcase }}` is already checked out in your working directory.
 
 1. Make the changes following the repository conventions (see CLAUDE.md).
@@ -9,8 +7,6 @@ The branch `{{ issue.identifier | downcase }}` is already checked out in your wo
 3. Format code: `direnv exec . mix format` (Elixir) and/or `cd frontend && npm run format` (frontend).
 
 ## Step 3: Test
-
-SYMPHONY_PHASE: Test
 
 ### Unit tests (required)
 

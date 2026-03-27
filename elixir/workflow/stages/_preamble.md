@@ -44,21 +44,14 @@ echo "Frontend: http://localhost:$FRONTEND_PORT"
 No description provided.
 {% endif %}
 
-## Status Markers
+## If You Get Stuck
 
-To signal your current phase, output this on its own line:
-```
-SYMPHONY_PHASE: <Phase Name>
-```
-
-Valid phases: Investigate, Implement, Test, Ship, Share Evidence
-
-To signal that you need human help, output this on its own line and STOP:
+If you are blocked by something you cannot resolve (missing permissions, unclear requirements, infrastructure issues), output this on its own line and STOP:
 ```
 SYMPHONY_NEEDS_HELP: <description of what you're stuck on>
 ```
 
-Use this when you are blocked by something you cannot resolve (missing permissions, unclear requirements, infrastructure issues, etc). The orchestrator will stop your session and notify the team.
+The orchestrator will stop your session and notify the team.
 
 ## Guardrails
 
@@ -67,7 +60,6 @@ Use this when you are blocked by something you cannot resolve (missing permissio
 - Do NOT merge PRs — leave them for human review.
 - Do NOT start backend or frontend — they are already running.
 - Use `direnv exec .` prefix for ALL mix/npm commands in the working directory.
-- When done, output `SYMPHONY_TASK_COMPLETE` on its own line.
 
 ## Environment Notes
 
@@ -89,5 +81,4 @@ If a PR already exists for this issue:
    gh api repos/{owner}/{repo}/pulls/<number>/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
    ```
 3. Address any unresolved review comments, push fixes.
-4. If all clear (CI green, reviews addressed) — output `SYMPHONY_TASK_COMPLETE` and STOP.
 {% endif %}

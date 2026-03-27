@@ -11,9 +11,5 @@ Complete ONLY these phases:
 
 {{missing_phases_content}}
 
-When all phases above are complete, output exactly this marker on its own line and STOP:
-
-SYMPHONY_TASK_COMPLETE
-
 Do NOT re-investigate, re-implement, or re-create the PR unless explicitly listed above.
 Do NOT look for more work. Do NOT expand scope.

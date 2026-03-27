@@ -144,25 +144,19 @@ defmodule SymphonyElixir.Claude.AgentRunner do
       end
 
     case result do
-      {:ok, %{session_id: new_session_id} = cli_result} ->
+      {:ok, %{session_id: new_session_id}} ->
         effective_session_id = new_session_id || session_id
-        task_complete = Map.get(cli_result, :task_complete, false)
 
         # Check workspace progress after each turn
         progress = check_turn_progress(workspace)
-        made_progress = progress.files_changed > 0 or progress.new_commits > 0 or task_complete
+        made_progress = progress.files_changed > 0 or progress.new_commits > 0
         next_no_progress = if made_progress, do: 0, else: no_progress_count + 1
 
         Logger.info(
-          "Completed Claude agent turn for #{issue_context(issue)} session_id=#{effective_session_id} workspace=#{workspace} turn=#{turn_number}/#{max_turns} task_complete=#{task_complete} progress=#{inspect(progress)} no_progress_count=#{next_no_progress}"
+          "Completed Claude agent turn for #{issue_context(issue)} session_id=#{effective_session_id} workspace=#{workspace} turn=#{turn_number}/#{max_turns} progress=#{inspect(progress)} no_progress_count=#{next_no_progress}"
         )
 
         cond do
-          task_complete ->
-            Logger.info("Agent signaled SYMPHONY_TASK_COMPLETE for #{issue_context(issue)}, stopping")
-
-            :ok
-
           next_no_progress >= 2 ->
             Logger.warning("No progress for #{next_no_progress} consecutive turns for #{issue_context(issue)}, stopping early")
 

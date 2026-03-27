@@ -1,7 +1,5 @@
 ## Step 1: Investigate and Plan
 
-SYMPHONY_PHASE: Investigate
-
 1. Read the full issue description, including any linked issues or attachments.
 2. Search the codebase for relevant files, functions, and patterns.
 3. Identify the root cause (for bugs) or the integration points (for features).

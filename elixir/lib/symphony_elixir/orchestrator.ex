@@ -110,7 +110,7 @@ defmodule SymphonyElixir.Orchestrator do
             :normal ->
               continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
 
-              case PhaseJudge.assess(running_entry) do
+              case PhaseJudge.assess(running_entry, eval_result) do
                 :done ->
                   score = if eval_result, do: Map.get(eval_result, :score), else: nil
                   Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PhaseJudge says done, eval score #{score || "n/a"}")

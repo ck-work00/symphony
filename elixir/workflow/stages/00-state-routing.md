@@ -1,7 +1,5 @@
 ## Step 0: Setup and Route
 
-SYMPHONY_PHASE: Investigate
-
 Before doing anything:
 
 1. `cd` to your working directory (from `.symphony_slot`)

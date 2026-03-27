@@ -1,7 +1,5 @@
 ## Step 4: Share Evidence (MANDATORY — do NOT skip)
 
-SYMPHONY_PHASE: Share Evidence
-
 You MUST post test results and browser screenshots to the Linear issue. This is how the team verifies your work.
 
 ### Step 4a: Upload each screenshot to Linear

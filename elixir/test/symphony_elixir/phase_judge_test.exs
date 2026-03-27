@@ -8,31 +8,52 @@ defmodule SymphonyElixir.PhaseJudgeTest do
   defp base_entry(overrides \\ %{}) do
     Map.merge(
       %{
-        identifier: "GEA-2074",
-        phases_seen: [],
-        pr_url: nil,
-        screenshot_urls: []
+        identifier: "GEA-2074"
       },
       overrides
     )
   end
 
-  describe "assess/1" do
-    test "returns :done when all phases completed" do
-      entry =
-        base_entry(%{
-          phases_seen: ["Investigate", "Implement", "Test", "Ship", "Share Evidence"],
-          pr_url: "https://github.com/org/repo/pull/42",
-          screenshot_urls: ["https://linear.app/asset/1.png"]
-        })
+  defp eval_result(overrides \\ %{}) do
+    Map.merge(
+      %{
+        pr_created: false,
+        pr_url: nil,
+        ci_status: "none",
+        files_changed: 0,
+        lines_changed: 0,
+        branch_pushed: false,
+        evidence_posted: false,
+        workpad_updated: false,
+        tests_written: false,
+        score: 0
+      },
+      overrides
+    )
+  end
 
-      assert PhaseJudge.assess(entry) == :done
-    end
-
-    test "retasks with all phases when nothing done" do
+  describe "assess/2" do
+    test "returns :done when all evidence present" do
       entry = base_entry()
 
-      assert {:retask, missing, []} = PhaseJudge.assess(entry)
+      eval =
+        eval_result(%{
+          files_changed: 5,
+          pr_created: true,
+          pr_url: "https://github.com/org/repo/pull/42",
+          tests_written: true,
+          evidence_posted: true,
+          branch_pushed: true
+        })
+
+      assert PhaseJudge.assess(entry, eval) == :done
+    end
+
+    test "retasks with all phases when no evidence" do
+      entry = base_entry()
+      eval = eval_result()
+
+      assert {:retask, missing, []} = PhaseJudge.assess(entry, eval)
       assert "Investigate" in missing
       assert "Implement" in missing
       assert "Test" in missing
@@ -40,58 +61,60 @@ defmodule SymphonyElixir.PhaseJudgeTest do
       assert "Share Evidence" in missing
     end
 
-    test "retasks for Test and Share Evidence when PR exists but no screenshots" do
-      entry =
-        base_entry(%{
-          phases_seen: ["Investigate", "Implement", "Ship"],
-          pr_url: "https://github.com/org/repo/pull/42",
-          screenshot_urls: []
+    test "retasks for Test and Share Evidence when PR exists but no tests or evidence" do
+      entry = base_entry()
+
+      eval =
+        eval_result(%{
+          files_changed: 3,
+          pr_created: true,
+          branch_pushed: true
         })
 
-      assert {:retask, missing, completed} = PhaseJudge.assess(entry)
+      assert {:retask, missing, completed} = PhaseJudge.assess(entry, eval)
       assert "Investigate" in completed
       assert "Implement" in completed
       assert "Ship" in completed
       assert "Test" in missing
       assert "Share Evidence" in missing
-      refute "Investigate" in missing
-      refute "Implement" in missing
-      refute "Ship" in missing
     end
 
-    test "retasks for Share Evidence when screenshots exist but not posted" do
-      entry =
-        base_entry(%{
-          phases_seen: ["Investigate", "Implement", "Test", "Ship"],
-          pr_url: "https://github.com/org/repo/pull/42",
-          screenshot_urls: ["https://linear.app/asset/1.png"]
+    test "retasks for Share Evidence when tests written but no evidence posted" do
+      entry = base_entry()
+
+      eval =
+        eval_result(%{
+          files_changed: 3,
+          pr_created: true,
+          tests_written: true,
+          branch_pushed: true
         })
 
-      assert {:retask, missing, completed} = PhaseJudge.assess(entry)
+      assert {:retask, missing, completed} = PhaseJudge.assess(entry, eval)
       assert missing == ["Share Evidence"]
       assert "Test" in completed
     end
 
     test "retasks for Ship when code changes exist but no PR" do
-      entry =
-        base_entry(%{
-          phases_seen: ["Investigate", "Implement", "Test", "Share Evidence"],
-          pr_url: nil,
-          screenshot_urls: ["https://linear.app/asset/1.png"]
+      entry = base_entry()
+
+      eval =
+        eval_result(%{
+          files_changed: 3,
+          tests_written: true,
+          evidence_posted: true
         })
 
-      assert {:retask, missing, completed} = PhaseJudge.assess(entry)
+      assert {:retask, missing, completed} = PhaseJudge.assess(entry, eval)
       assert "Ship" in missing
       refute "Ship" in completed
     end
 
-    test "missing phases are in canonical order" do
-      entry = base_entry(%{phases_seen: ["Investigate"], pr_url: nil})
+    test "retasks with all phases when eval_result is nil" do
+      entry = base_entry()
 
-      assert {:retask, missing, _completed} = PhaseJudge.assess(entry)
-      # Missing phases should follow the canonical order
-      assert missing == ["Test", "Ship", "Share Evidence"] ||
-               hd(missing) in ["Implement", "Test", "Ship", "Share Evidence"]
+      assert {:retask, missing, []} = PhaseJudge.assess(entry, nil)
+      assert length(missing) == 5
     end
 
     test "phases_in_order returns canonical list" do

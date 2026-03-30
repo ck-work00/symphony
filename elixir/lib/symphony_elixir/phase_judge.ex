@@ -3,20 +3,20 @@ defmodule SymphonyElixir.PhaseJudge do
   External judge that evaluates which workflow phases an agent completed.
 
   Uses external evidence — git state, PRs, CI, Linear comments — as the
-  primary source of truth. The evaluator gathers this evidence after each
-  agent run. The judge maps evidence to phase completion.
+  primary source of truth. Workers never self-report phase status.
 
-  Workers never self-report phase status. The judge decides.
+  Phases are dispatched one at a time. After each agent run, the judge
+  determines which phase to dispatch next.
   """
 
   require Logger
 
   alias SymphonyElixir.History
 
-  @phases_in_order ["Investigate", "Implement", "Test", "Ship", "Share Evidence"]
+  @phases_in_order ["Investigate", "Implement", "Share Evidence", "Simplify"]
 
   # Maximum total runs per issue before we stop retrying.
-  @max_runs_per_issue 8
+  @max_runs_per_issue 12
 
   @type assessment :: :done | :max_runs_reached | {:retask, missing :: [String.t()], completed :: [String.t()]}
 
@@ -24,21 +24,20 @@ defmodule SymphonyElixir.PhaseJudge do
   Assess a completed running entry using external evidence.
 
   Takes the running entry and an optional evaluation result from the Evaluator.
-  Maps evidence to phase completion, merges with history from prior runs.
-
   Returns `:done`, `:max_runs_reached`, or `{:retask, missing, completed}`.
+
+  In the discrete-phase model, `{:retask, missing, completed}` always means
+  "dispatch the first element of missing next."
   """
   @spec assess(map(), map() | nil) :: assessment()
   def assess(running_entry, eval_result \\ nil) do
     identifier = running_entry[:identifier]
     summary = History.issue_summary(identifier)
 
-    # Hard stop: too many runs means something is wrong
     if summary.total_runs >= @max_runs_per_issue do
       Logger.warning("PhaseJudge: issue=#{identifier} reached #{summary.total_runs} runs (max #{@max_runs_per_issue}), stopping")
       :max_runs_reached
     else
-      # Build completed phases from history + current evidence
       from_history = phases_from_history(summary)
       from_evidence = phases_from_evidence(eval_result)
       completed = Enum.uniq(from_history ++ from_evidence)
@@ -56,9 +55,6 @@ defmodule SymphonyElixir.PhaseJudge do
 
   @doc """
   Pre-dispatch assessment using local history and external signals.
-
-  Checks history and external signals (open PR, Linear evidence) to decide
-  whether to dispatch, skip, or retask.
   """
   @spec pre_dispatch_assess(map(), String.t() | nil) :: :fresh | assessment()
   def pre_dispatch_assess(issue, pr_url) do
@@ -74,24 +70,11 @@ defmodule SymphonyElixir.PhaseJudge do
       # Add phases implied by external signals
       from_external =
         []
-        |> then(fn p -> if pr_url != nil, do: ["Investigate", "Implement", "Ship"] ++ p, else: p end)
+        |> then(fn p -> if pr_url != nil, do: ["Investigate", "Implement"] ++ p, else: p end)
         |> then(fn p -> if summary.has_evidence, do: ["Share Evidence"] ++ p, else: p end)
-        |> then(fn p -> if summary.has_tests, do: ["Test"] ++ p, else: p end)
 
       completed = Enum.uniq(from_history ++ from_external)
       missing = @phases_in_order -- completed
-
-      # Check Linear if still missing evidence
-      {missing, completed} =
-        if missing != [] and missing -- ["Test", "Share Evidence"] == [] do
-          if check_linear_evidence(issue) do
-            {[], @phases_in_order}
-          else
-            {missing, completed}
-          end
-        else
-          {missing, completed}
-        end
 
       Logger.info("PhaseJudge pre-dispatch: issue=#{identifier} pr=#{pr_url} completed=#{inspect(completed)} missing=#{inspect(missing)} total_runs=#{summary.total_runs}")
 
@@ -118,20 +101,24 @@ defmodule SymphonyElixir.PhaseJudge do
   defp phases_from_evidence(eval) do
     phases = []
 
-    # Investigate: branch exists and has changes (agent read the issue and started work)
-    phases = if eval[:files_changed] > 0 or eval[:branch_pushed] or eval[:pr_created], do: ["Investigate" | phases], else: phases
+    # Investigate: plan posted to Linear
+    phases = if eval[:plan_posted], do: ["Investigate" | phases], else: phases
 
-    # Implement: files changed against main
-    phases = if eval[:files_changed] > 0, do: ["Implement" | phases], else: phases
+    # Implement: PR created with files changed and tests written
+    phases =
+      if eval[:pr_created] and eval[:files_changed] > 0 do
+        p = ["Implement" | phases]
+        # If there's also a plan, investigate is done too
+        if eval[:plan_posted], do: p, else: ["Investigate" | p]
+      else
+        phases
+      end
 
-    # Test: test files exist in the diff
-    phases = if eval[:tests_written], do: ["Test" | phases], else: phases
-
-    # Ship: PR created
-    phases = if eval[:pr_created], do: ["Ship" | phases], else: phases
-
-    # Share Evidence: Linear comment with screenshots posted
+    # Share Evidence: Linear comment with screenshots/evidence posted
     phases = if eval[:evidence_posted], do: ["Share Evidence" | phases], else: phases
+
+    # Simplify: simplification commit or "no changes needed" comment
+    phases = if eval[:simplify_done], do: ["Simplify" | phases], else: phases
 
     Enum.uniq(phases)
   end
@@ -144,7 +131,8 @@ defmodule SymphonyElixir.PhaseJudge do
       pr_created: eval[:pr_created] || false,
       tests_written: eval[:tests_written] || false,
       evidence_posted: eval[:evidence_posted] || false,
-      branch_pushed: eval[:branch_pushed] || false,
+      plan_posted: eval[:plan_posted] || false,
+      simplify_done: eval[:simplify_done] || false,
       ci_status: eval[:ci_status] || "none"
     }
   end
@@ -156,12 +144,21 @@ defmodule SymphonyElixir.PhaseJudge do
   defp phases_from_history(summary) do
     phases = []
 
-    # Milestones from events and eval results across all runs
     event_types = summary.events |> Enum.map(& &1.event_type) |> MapSet.new()
 
-    phases = if MapSet.member?(event_types, "milestone_first_edit"), do: ["Investigate", "Implement" | phases], else: phases
-    phases = if MapSet.member?(event_types, "milestone_tests_run") or summary.has_tests, do: ["Test" | phases], else: phases
-    phases = if MapSet.member?(event_types, "milestone_pr_created") or summary.has_pr, do: ["Ship", "Investigate", "Implement" | phases], else: phases
+    # PR or first edit implies Investigate + Implement done
+    phases =
+      if MapSet.member?(event_types, "milestone_pr_created") or summary.has_pr do
+        ["Investigate", "Implement" | phases]
+      else
+        if MapSet.member?(event_types, "milestone_first_edit") do
+          ["Investigate" | phases]
+        else
+          phases
+        end
+      end
+
+    # Evidence in Linear
     phases = if length(summary.screenshots) > 0 or summary.has_evidence, do: ["Share Evidence" | phases], else: phases
 
     Enum.uniq(phases)

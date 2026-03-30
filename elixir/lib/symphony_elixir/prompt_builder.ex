@@ -29,6 +29,55 @@ defmodule SymphonyElixir.PromptBuilder do
   end
 
   @doc """
+  Builds a single-phase prompt: preamble + issue context + one phase's instructions.
+
+  Used in the discrete-phase model where each agent run handles exactly one phase.
+  """
+  @spec build_phase_prompt(map(), String.t(), keyword()) :: String.t()
+  def build_phase_prompt(issue, phase_name, opts \\ []) do
+    stages_dir = Workflow.stages_directory()
+    stages = StageLoader.load_stages(stages_dir)
+
+    # Render the preamble through Solid for issue context
+    preamble_raw = Map.get(stages, "_preamble.md", "")
+
+    preamble =
+      preamble_raw
+      |> Solid.parse!()
+      |> Solid.render!(
+        %{
+          "attempt" => Keyword.get(opts, :attempt),
+          "issue" => issue |> Map.from_struct() |> to_solid_map(),
+          "existing_pr_url" => Keyword.get(opts, :existing_pr_url),
+          "existing_pr_branch" => Keyword.get(opts, :existing_pr_branch)
+        },
+        @render_opts
+      )
+      |> IO.iodata_to_binary()
+
+    # Get this phase's instructions
+    phase_content = StageLoader.phase_content(stages, phase_name)
+
+    phase_md =
+      if phase_content do
+        # Render any Solid template variables in the phase content
+        phase_content
+        |> Solid.parse!()
+        |> Solid.render!(
+          %{"issue" => issue |> Map.from_struct() |> to_solid_map()},
+          @render_opts
+        )
+        |> IO.iodata_to_binary()
+      else
+        "Complete the #{phase_name} phase."
+      end
+
+    [preamble, "---", phase_md]
+    |> Enum.join("\n\n")
+    |> String.trim()
+  end
+
+  @doc """
   Builds a continuation prompt for turn N+.
   Uses staged _continuation.md template if available, otherwise falls back to default.
   """

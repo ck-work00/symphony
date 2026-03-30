@@ -204,9 +204,15 @@ defmodule SymphonyElixir.Claude.AgentRunner do
   defp build_turn_prompt(issue, opts, 1, _max_turns, _comments) do
     case Keyword.get(opts, :retask_phases) do
       nil ->
-        PromptBuilder.build_prompt(issue, opts)
+        # Fresh dispatch — start with Investigate phase
+        PromptBuilder.build_phase_prompt(issue, "Investigate", opts)
+
+      [single_phase] ->
+        # Single-phase dispatch (discrete-phase model)
+        PromptBuilder.build_phase_prompt(issue, single_phase, opts)
 
       missing_phases ->
+        # Legacy multi-phase fallback
         completed_phases = Keyword.get(opts, :completed_phases, [])
         PromptBuilder.build_retask_prompt(issue, missing_phases, completed_phases, opts)
     end

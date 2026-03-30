@@ -128,8 +128,11 @@ defmodule SymphonyElixir.Orchestrator do
 
                     complete_issue(state, issue_id)
                   else
+                    # Dispatch only the first missing phase
+                    [next_phase | _] = missing_phases
+
                     Logger.info(
-                      "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; retasking for missing phases: #{inspect(missing_phases)} (#{continuation_count}/#{@max_continuations})"
+                      "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; dispatching phase: #{next_phase} (missing: #{inspect(missing_phases)}, #{continuation_count}/#{@max_continuations})"
                     )
 
                     state
@@ -138,7 +141,7 @@ defmodule SymphonyElixir.Orchestrator do
                       identifier: running_entry.identifier,
                       delay_type: :continuation,
                       continuation_count: continuation_count,
-                      retask_phases: missing_phases,
+                      retask_phases: [next_phase],
                       completed_phases: completed_phases
                     })
                   end
@@ -732,7 +735,12 @@ defmodule SymphonyElixir.Orchestrator do
 
           case PhaseJudge.pre_dispatch_assess(refreshed_issue, pr_url) do
             :fresh ->
-              do_dispatch_issue(state, refreshed_issue, attempt, Map.merge(metadata, pr_metadata))
+              # Fresh issue — dispatch Investigate phase
+              fresh_metadata = Map.merge(metadata, Map.merge(pr_metadata, %{
+                retask_phases: ["Investigate"],
+                completed_phases: []
+              }))
+              do_dispatch_issue(state, refreshed_issue, attempt, fresh_metadata)
 
             :done ->
               Logger.info("PhaseJudge: all phases complete for #{issue_context(refreshed_issue)}, skipping dispatch")
@@ -743,11 +751,13 @@ defmodule SymphonyElixir.Orchestrator do
               complete_issue(state, refreshed_issue.id)
 
             {:retask, missing_phases, completed_phases} ->
-              Logger.info("PhaseJudge: dispatching #{issue_context(refreshed_issue)} for missing phases: #{inspect(missing_phases)}")
+              # Dispatch only the first missing phase
+              [next_phase | _] = missing_phases
+              Logger.info("PhaseJudge: dispatching #{issue_context(refreshed_issue)} for phase: #{next_phase} (missing: #{inspect(missing_phases)})")
 
               retask_metadata =
                 Map.merge(metadata, Map.merge(pr_metadata, %{
-                  retask_phases: missing_phases,
+                  retask_phases: [next_phase],
                   completed_phases: completed_phases
                 }))
 

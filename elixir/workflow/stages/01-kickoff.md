@@ -1,6 +1,6 @@
 ## Investigate
 
-Do NOT write any code. Do NOT search the codebase yet. Read first.
+Do NOT write any code. This phase is research and planning only.
 
 ### Read the issue
 
@@ -30,11 +30,11 @@ Use what you learn to **refine your understanding of the requirements**. Sometim
 
 ### Post your implementation plan to Linear
 
-You MUST post a comment on the Linear issue before writing any code. This is how the team tracks your understanding and verifies your approach.
+You MUST post a comment on the Linear issue before this phase is complete. Use the Linear MCP `save_comment` tool with the issue ID from the Issue Context above.
 
 The comment must include:
 
-1. **Requirements checklist** — every distinct requirement from the issue, as a markdown checkbox list:
+1. **Requirements checklist** — every distinct requirement as a markdown checkbox list:
    ```
    ## Requirements
    - [ ] Fix email sender attribution for forwarded messages
@@ -42,14 +42,12 @@ The comment must include:
    - [ ] Add test coverage for forwarding scenarios
    ```
 
-2. **Implementation plan** — for each requirement, list:
+2. **Implementation plan** — for each requirement:
    - Which files you will change
    - What you will add, modify, or remove
    - Your approach and why
 
 3. **Risks or open questions** — anything unclear, risky, or that might need human input.
-
-Post using the Linear MCP `save_comment` tool with the issue ID from the Issue Context above.
 
 If MCP tools are not available, use curl:
 ```bash
@@ -59,4 +57,7 @@ curl -s -X POST https://api.linear.app/graphql \
   -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "YOUR_COMMENT_HERE"}}'
 ```
 
-**Do NOT proceed to Implement until this comment is posted.** The plan is your contract — you will implement exactly what you listed, nothing more and nothing less. If a requirement is unclear, say so in the plan rather than guessing.
+### Done
+
+You have completed the Investigate phase. Stop here. Do not write any code.
+Your deliverable is the Linear comment with the requirements checklist and implementation plan.

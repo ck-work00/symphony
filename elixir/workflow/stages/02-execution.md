@@ -1,50 +1,48 @@
 ## Implement
 
-The branch `{{ issue.identifier | downcase }}` is already checked out in your working directory.
+### Get your plan
 
-1. Work through your requirements checklist from Step 1 **one item at a time**.
-2. After implementing each requirement, mentally check it off. Do not move to the next until the current one is complete.
-3. Follow the repository conventions (see CLAUDE.md).
+Read the implementation plan from the Linear issue comments. Your plan was posted in a previous phase — fetch the comments on issue `{{ issue.id }}` and find the one with "## Requirements".
+
+That checklist is your contract. Implement exactly what it says.
+
+### Write tests FIRST
+
+For each requirement in the plan:
+
+1. **Write a failing test** that covers the requirement. Place tests in the corresponding `test/` directory following existing conventions.
+2. **Run the test** to confirm it fails: `direnv exec . mix test <test_file>`
+3. Only then move to the implementation step below.
+
+Cover the happy path, edge cases, and error conditions for each requirement. Do not skip test writing — it is not optional.
+
+### Implement to make tests pass
+
+Work through the requirements checklist one item at a time:
+
+1. Write the implementation code to make your failing tests pass.
+2. Run `direnv exec . mix test` after each requirement to verify nothing broke.
+3. Follow repository conventions (see CLAUDE.md).
 4. Keep changes focused — implement what you planned, nothing more.
-5. Format code: `direnv exec . mix format` (Elixir) and/or `cd frontend && npm run format` (frontend).
 
-**Before moving to Step 3, verify every item in your requirements checklist is addressed.** If you realize an item is more complex than expected, implement what you can and note the gap — do not silently skip it.
+After all requirements are implemented:
+- Run the full test suite: `direnv exec . mix test`
+- Run static analysis: `direnv exec . mix check`
+- Format code: `direnv exec . mix format`
 
-## Test
+All tests must pass before proceeding.
 
-### Unit tests (required)
+### Commit and create PR
 
-1. Write unit tests for every significant code path you changed or added.
-2. Cover the happy path, edge cases, and error conditions.
-3. Run static analysis: `direnv exec . mix check`
-4. Run the full test suite: `direnv exec . mix test`
-5. All new and existing tests must pass. Fix failures before proceeding.
+1. Commit with a clear message: `{{ issue.identifier }}: <summary>`
+2. Push and create PR:
+   ```bash
+   git push -u origin {{ issue.identifier | downcase }}
+   gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>"
+   ```
+3. Post the PR link as a comment on the Linear issue.
 
-### Browser testing (MANDATORY — do NOT skip)
+### Done
 
-You MUST open a browser and verify your changes visually. You have Playwright MCP tools available — use them.
-
-Source the port numbers first:
-```bash
-cat .symphony_slot  # or source it
-```
-
-Then follow these exact steps:
-
-1. **Navigate** to the relevant page in the frontend (use the FRONTEND_PORT from .symphony_slot):
-   - Use the `browser_navigate` Playwright tool with URL `http://localhost:<FRONTEND_PORT>/...`
-   - Log in if needed using test credentials from the CLAUDE.md
-
-2. **Interact** with the UI to exercise the flow described in the issue:
-   - Click buttons, fill forms, navigate between pages
-   - Use `browser_click`, `browser_fill_form`, `browser_snapshot` tools
-
-3. **Verify** the fix works — check that the expected behavior matches what you see
-
-4. **Take screenshots** at key moments (before/after the fix, the final state):
-   - Use the `browser_take_screenshot` Playwright tool
-   - Save each screenshot with a descriptive filename
-
-You will upload these screenshots to the Linear issue in the next step.
-
-**If you skip browser testing, the work is not complete. Do NOT move to Step 4 without screenshots.**
+You have completed the Implement phase. Stop here.
+Your deliverables: tests written, code implemented, PR created with CI running.

@@ -26,6 +26,8 @@ defmodule SymphonyElixir.PhaseJudgeTest do
         evidence_posted: false,
         workpad_updated: false,
         tests_written: false,
+        plan_posted: false,
+        simplify_done: false,
         score: 0
       },
       overrides
@@ -38,11 +40,12 @@ defmodule SymphonyElixir.PhaseJudgeTest do
 
       eval =
         eval_result(%{
+          plan_posted: true,
           files_changed: 5,
           pr_created: true,
-          pr_url: "https://github.com/org/repo/pull/42",
           tests_written: true,
           evidence_posted: true,
+          simplify_done: true,
           branch_pushed: true
         })
 
@@ -56,74 +59,68 @@ defmodule SymphonyElixir.PhaseJudgeTest do
       assert {:retask, missing, []} = PhaseJudge.assess(entry, eval)
       assert "Investigate" in missing
       assert "Implement" in missing
-      assert "Test" in missing
-      assert "Ship" in missing
       assert "Share Evidence" in missing
+      assert "Simplify" in missing
     end
 
-    test "retasks for Test and Share Evidence when PR exists but no tests or evidence" do
+    test "retasks for Implement when only plan posted" do
+      entry = base_entry()
+      eval = eval_result(%{plan_posted: true})
+
+      assert {:retask, missing, completed} = PhaseJudge.assess(entry, eval)
+      assert "Investigate" in completed
+      assert "Implement" in missing
+    end
+
+    test "retasks for Share Evidence when PR exists" do
       entry = base_entry()
 
       eval =
         eval_result(%{
-          files_changed: 3,
+          plan_posted: true,
+          files_changed: 5,
           pr_created: true,
+          tests_written: true,
           branch_pushed: true
         })
 
       assert {:retask, missing, completed} = PhaseJudge.assess(entry, eval)
       assert "Investigate" in completed
       assert "Implement" in completed
-      assert "Ship" in completed
-      assert "Test" in missing
       assert "Share Evidence" in missing
     end
 
-    test "retasks for Share Evidence when tests written but no evidence posted" do
+    test "retasks for Simplify when evidence posted" do
       entry = base_entry()
 
       eval =
         eval_result(%{
-          files_changed: 3,
+          plan_posted: true,
+          files_changed: 5,
           pr_created: true,
           tests_written: true,
+          evidence_posted: true,
           branch_pushed: true
         })
 
       assert {:retask, missing, completed} = PhaseJudge.assess(entry, eval)
-      assert missing == ["Share Evidence"]
-      assert "Test" in completed
-    end
-
-    test "retasks for Ship when code changes exist but no PR" do
-      entry = base_entry()
-
-      eval =
-        eval_result(%{
-          files_changed: 3,
-          tests_written: true,
-          evidence_posted: true
-        })
-
-      assert {:retask, missing, completed} = PhaseJudge.assess(entry, eval)
-      assert "Ship" in missing
-      refute "Ship" in completed
+      assert missing == ["Simplify"]
+      assert "Share Evidence" in completed
     end
 
     test "retasks with all phases when eval_result is nil" do
       entry = base_entry()
 
       assert {:retask, missing, []} = PhaseJudge.assess(entry, nil)
-      assert length(missing) == 5
+      assert length(missing) == 4
     end
 
     test "phases_in_order returns canonical list" do
       assert PhaseJudge.phases_in_order() == [
                "Investigate",
                "Implement",
-               "Test",
-               "Ship",
-               "Share Evidence"
+               "Share Evidence",
+               "Simplify"
              ]
     end
   end

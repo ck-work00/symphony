@@ -30,6 +30,8 @@ defmodule SymphonyElixir.Evaluator do
           evidence_posted: boolean(),
           workpad_updated: boolean(),
           tests_written: boolean(),
+          plan_posted: boolean(),
+          simplify_done: boolean(),
           score: integer()
         }
 
@@ -63,6 +65,8 @@ defmodule SymphonyElixir.Evaluator do
     pushed = check_branch_pushed(workspace_path, branch)
     {evidence, workpad} = check_linear_comments(issue_id)
     tests = check_tests_written(workspace_path)
+    plan = check_plan_posted(issue_id)
+    simplify = check_simplify_done(workspace_path, issue_id)
 
     eval = %{
       pr_created: pr_result[:exists],
@@ -74,6 +78,8 @@ defmodule SymphonyElixir.Evaluator do
       evidence_posted: evidence,
       workpad_updated: workpad,
       tests_written: tests,
+      plan_posted: plan,
+      simplify_done: simplify,
       score: 0
     }
 
@@ -254,6 +260,47 @@ defmodule SymphonyElixir.Evaluator do
       String.contains?(file, ".test.") or
       String.contains?(file, "/test/") or
       String.contains?(file, "spec.")
+  end
+
+  defp check_plan_posted(nil), do: false
+
+  defp check_plan_posted(issue_id) do
+    case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+      {:ok, comments} ->
+        all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
+
+        String.contains?(all_text, "## Requirements") or
+          String.contains?(all_text, "- [ ]") or
+          String.contains?(all_text, "## Implementation") or
+          String.contains?(all_text, "### Plan")
+
+      _ ->
+        false
+    end
+  end
+
+  defp check_simplify_done(_workspace_path, nil), do: false
+
+  defp check_simplify_done(workspace_path, issue_id) do
+    simplify_commit =
+      case run_in_workspace(workspace_path, "git log --oneline --grep='simplify' origin/main..HEAD 2>/dev/null") do
+        {:ok, output} -> String.trim(output) != ""
+        _ -> false
+      end
+
+    no_changes_comment =
+      case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+        {:ok, comments} ->
+          Enum.any?(comments, fn c ->
+            String.contains?(String.downcase(c.body), "no simplification needed") or
+              String.contains?(String.downcase(c.body), "no changes needed")
+          end)
+
+        _ ->
+          false
+      end
+
+    simplify_commit or no_changes_comment
   end
 
   # ---------------------------------------------------------------------------

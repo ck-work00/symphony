@@ -36,5 +36,15 @@ The agent runner already re-fetches issue *state* between turns (`continue_with_
 
 The `@agent` prefix convention for comments works for ad-hoc instructions. Description changes are for updating the source of truth.
 
+## Evaluate test coverage quality, not just existence
+The evaluator currently checks `tests_written: bool` — did any test file change. This doesn't catch agents that write one token test for a multi-file change. The judge should evaluate coverage adequacy:
+
+- Compare test file count vs source file count (ratio)
+- Check test line count relative to implementation line count
+- Use the PR diff to identify untested code paths (functions added without corresponding test cases)
+- Feed this back to the retask prompt: "You changed 5 source files but only wrote 1 test file. Add tests for X, Y, Z."
+
+This would catch the GEA-2463 case where the agent wrote one test file for a large feature.
+
 ## Dashboard polling overhead
 When the dashboard LiveView is open, it polls `run_events` every second per expanded timeline. This hammers the SQLite DB with redundant queries. Should debounce or only poll when timeline is expanded.

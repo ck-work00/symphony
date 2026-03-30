@@ -231,18 +231,29 @@ defmodule SymphonyElixir.Evaluator do
   defp check_tests_written(workspace_path) do
     case run_in_workspace(workspace_path, "git diff origin/main --name-only 2>/dev/null") do
       {:ok, output} ->
-        output
-        |> String.split("\n", trim: true)
-        |> Enum.any?(fn file ->
-          String.contains?(file, "_test.") or
-            String.contains?(file, ".test.") or
-            String.contains?(file, "/test/") or
-            String.contains?(file, "spec.")
-        end)
+        files = String.split(output, "\n", trim: true)
+
+        test_files = Enum.filter(files, &test_file?/1)
+        source_files = Enum.reject(files, &test_file?/1)
+
+        has_tests = length(test_files) > 0
+
+        if has_tests and length(source_files) > 0 do
+          Logger.info("Evaluator: test coverage — #{length(test_files)} test files for #{length(source_files)} source files")
+        end
+
+        has_tests
 
       _ ->
         false
     end
+  end
+
+  defp test_file?(file) do
+    String.contains?(file, "_test.") or
+      String.contains?(file, ".test.") or
+      String.contains?(file, "/test/") or
+      String.contains?(file, "spec.")
   end
 
   # ---------------------------------------------------------------------------

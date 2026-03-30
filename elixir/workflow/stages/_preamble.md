@@ -30,6 +30,7 @@ echo "Frontend: http://localhost:$FRONTEND_PORT"
 ## Issue Context
 
 - **Identifier**: {{ issue.identifier }}
+- **Issue ID**: {{ issue.id }}
 - **Title**: {{ issue.title }}
 - **Priority**: {{ issue.priority }}
 - **State**: {{ issue.state }}

@@ -2,9 +2,13 @@
 
 The branch `{{ issue.identifier | downcase }}` is already checked out in your working directory.
 
-1. Make the changes following the repository conventions (see CLAUDE.md).
-2. Keep changes focused — solve the issue, nothing more.
-3. Format code: `direnv exec . mix format` (Elixir) and/or `cd frontend && npm run format` (frontend).
+1. Work through your requirements checklist from Step 1 **one item at a time**.
+2. After implementing each requirement, mentally check it off. Do not move to the next until the current one is complete.
+3. Follow the repository conventions (see CLAUDE.md).
+4. Keep changes focused — implement what you planned, nothing more.
+5. Format code: `direnv exec . mix format` (Elixir) and/or `cd frontend && npm run format` (frontend).
+
+**Before moving to Step 3, verify every item in your requirements checklist is addressed.** If you realize an item is more complex than expected, implement what you can and note the gap — do not silently skip it.
 
 ## Step 3: Test
 

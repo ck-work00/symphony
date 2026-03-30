@@ -147,9 +147,11 @@ defmodule SymphonyElixir.Claude.AgentRunner do
       {:ok, %{session_id: new_session_id}} ->
         effective_session_id = new_session_id || session_id
 
-        # Check workspace progress after each turn
+        # Check workspace progress after each turn.
+        # Skip no-progress counting on early turns — investigation and planning
+        # produce no git changes but are essential work (reading code, posting to Linear).
         progress = check_turn_progress(workspace)
-        made_progress = progress.files_changed > 0 or progress.new_commits > 0
+        made_progress = progress.files_changed > 0 or progress.new_commits > 0 or turn_number <= 3
         next_no_progress = if made_progress, do: 0, else: no_progress_count + 1
 
         Logger.info(
@@ -157,7 +159,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
         )
 
         cond do
-          next_no_progress >= 2 ->
+          next_no_progress >= 3 ->
             Logger.warning("No progress for #{next_no_progress} consecutive turns for #{issue_context(issue)}, stopping early")
 
             :ok

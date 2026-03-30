@@ -231,82 +231,84 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 </tr>
               </thead>
               <tbody>
-                <tr :for={entry <- @payload.running}>
-                  <td>
-                    <div class="issue-stack">
-                      <%= if entry[:history_run_id] do %>
-                        <span
-                          class="issue-id issue-id-clickable"
-                          phx-click="toggle_timeline"
-                          phx-value-run-id={entry.history_run_id}
-                          style="cursor: pointer;"
-                        >
-                          <%= entry.issue_identifier %>
-                        </span>
-                      <% else %>
-                        <span class="issue-id"><%= entry.issue_identifier %></span>
-                      <% end %>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="phase-steps">
-                      <span
-                        :for={step <- ["Investigate", "Implement", "Test", "Ship", "Share Evidence"]}
-                        class={phase_step_class(step, entry[:phase])}
-                        title={step}
-                      >
-                        <span class="phase-step-dot"></span>
-                        <span class="phase-step-label"><%= step %></span>
-                      </span>
-                    </div>
-                    <%= if entry[:screenshot_urls] != [] do %>
-                      <div class="screenshot-thumbs">
-                        <a
-                          :for={url <- entry[:screenshot_urls] || []}
-                          href={url}
-                          target="_blank"
-                          class="screenshot-thumb"
-                        >
-                          <img src={url} />
-                        </a>
+                <%= for entry <- @payload.running do %>
+                  <tr>
+                    <td>
+                      <div class="issue-stack">
+                        <%= if entry[:history_run_id] do %>
+                          <span
+                            class="issue-id issue-id-clickable"
+                            phx-click="toggle_timeline"
+                            phx-value-run-id={entry.history_run_id}
+                            style="cursor: pointer;"
+                          >
+                            <%= entry.issue_identifier %>
+                          </span>
+                        <% else %>
+                          <span class="issue-id"><%= entry.issue_identifier %></span>
+                        <% end %>
                       </div>
-                    <% end %>
-                  </td>
-                  <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
-                  <td>
-                    <div class="detail-stack">
-                      <%= if entry[:pr_url] do %>
-                        <a class="pr-link" href={entry.pr_url} target="_blank"><%= short_pr_url(entry.pr_url) %></a>
+                    </td>
+                    <td>
+                      <div class="phase-steps">
+                        <span
+                          :for={step <- ["Investigate", "Implement", "Test", "Ship", "Share Evidence"]}
+                          class={phase_step_class(step, entry[:phase])}
+                          title={step}
+                        >
+                          <span class="phase-step-dot"></span>
+                          <span class="phase-step-label"><%= step %></span>
+                        </span>
+                      </div>
+                      <%= if entry[:screenshot_urls] != [] do %>
+                        <div class="screenshot-thumbs">
+                          <a
+                            :for={url <- entry[:screenshot_urls] || []}
+                            href={url}
+                            target="_blank"
+                            class="screenshot-thumb"
+                          >
+                            <img src={url} />
+                          </a>
+                        </div>
                       <% end %>
-                      <span
-                        class="event-text"
-                        title={entry.last_message || to_string(entry.last_event || "n/a")}
-                      ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
-                    </div>
-                  </td>
-                  <td>
-                    <div class="token-stack numeric">
-                      <span><%= format_int(entry.tokens.total_tokens) %></span>
-                    </div>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      class="action-btn action-btn-danger"
-                      phx-click="stop_issue"
-                      phx-value-issue-id={entry.issue_id}
-                      data-confirm="Stop this agent?"
-                    >
-                      Stop
-                    </button>
-                  </td>
-                </tr>
-                <%= for entry <- @payload.running, entry[:history_run_id] && MapSet.member?(@expanded_timelines, entry.history_run_id) do %>
-                  <tr class="timeline-row">
-                    <td colspan="6">
-                      {render_timeline(assigns, entry.history_run_id)}
+                    </td>
+                    <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
+                    <td>
+                      <div class="detail-stack">
+                        <%= if entry[:pr_url] do %>
+                          <a class="pr-link" href={entry.pr_url} target="_blank"><%= short_pr_url(entry.pr_url) %></a>
+                        <% end %>
+                        <span
+                          class="event-text"
+                          title={entry.last_message || to_string(entry.last_event || "n/a")}
+                        ><%= entry.last_message || to_string(entry.last_event || "n/a") %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <div class="token-stack numeric">
+                        <span><%= format_int(entry.tokens.total_tokens) %></span>
+                      </div>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        class="action-btn action-btn-danger"
+                        phx-click="stop_issue"
+                        phx-value-issue-id={entry.issue_id}
+                        data-confirm="Stop this agent?"
+                      >
+                        Stop
+                      </button>
                     </td>
                   </tr>
+                  <%= if entry[:history_run_id] && MapSet.member?(@expanded_timelines, entry.history_run_id) do %>
+                    <tr class="timeline-row">
+                      <td colspan="6">
+                        {render_timeline(assigns, entry.history_run_id)}
+                      </td>
+                    </tr>
+                  <% end %>
                 <% end %>
               </tbody>
             </table>

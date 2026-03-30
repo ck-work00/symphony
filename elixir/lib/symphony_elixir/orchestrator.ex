@@ -721,15 +721,18 @@ defmodule SymphonyElixir.Orchestrator do
           do_dispatch_issue(state, refreshed_issue, attempt, metadata)
         else
           # Check for existing PR and let the judge decide
-          pr_url =
+          {pr_url, pr_branch} =
             case check_existing_pr(refreshed_issue) do
-              {:pr_exists, url} -> url
-              :no_pr -> nil
+              {:pr_exists, url, branch} -> {url, branch}
+              :no_pr -> {nil, nil}
             end
+
+          # Pass existing PR info to the agent so it works on the right branch
+          pr_metadata = %{existing_pr_url: pr_url, existing_pr_branch: pr_branch}
 
           case PhaseJudge.pre_dispatch_assess(refreshed_issue, pr_url) do
             :fresh ->
-              do_dispatch_issue(state, refreshed_issue, attempt, metadata)
+              do_dispatch_issue(state, refreshed_issue, attempt, Map.merge(metadata, pr_metadata))
 
             :done ->
               Logger.info("PhaseJudge: all phases complete for #{issue_context(refreshed_issue)}, skipping dispatch")
@@ -743,10 +746,10 @@ defmodule SymphonyElixir.Orchestrator do
               Logger.info("PhaseJudge: dispatching #{issue_context(refreshed_issue)} for missing phases: #{inspect(missing_phases)}")
 
               retask_metadata =
-                Map.merge(metadata, %{
+                Map.merge(metadata, Map.merge(pr_metadata, %{
                   retask_phases: missing_phases,
                   completed_phases: completed_phases
-                })
+                }))
 
               do_dispatch_issue(state, refreshed_issue, attempt, retask_metadata)
           end
@@ -780,7 +783,9 @@ defmodule SymphonyElixir.Orchestrator do
            runner.run(issue, recipient,
              attempt: attempt,
              retask_phases: metadata[:retask_phases],
-             completed_phases: metadata[:completed_phases]
+             completed_phases: metadata[:completed_phases],
+             existing_pr_url: metadata[:existing_pr_url],
+             existing_pr_branch: metadata[:existing_pr_branch]
            )
          end) do
       {:ok, pid} ->
@@ -1954,13 +1959,13 @@ defmodule SymphonyElixir.Orchestrator do
     repos = repos_for_labels(labels)
     branches = [identifier, String.downcase(identifier)]
 
+    # First try matching by branch name (exact match)
     result =
       Enum.find_value(repos, fn repo ->
         Enum.find_value(branches, fn branch ->
-          case System.cmd("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"], stderr_to_stdout: true) do
-            {url, 0} ->
-              trimmed = String.trim(url)
-              if trimmed != "" and String.starts_with?(trimmed, "http"), do: trimmed
+          case System.cmd("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url,headRefName", "--jq", ".[0]"], stderr_to_stdout: true) do
+            {output, 0} ->
+              parse_pr_result(output)
 
             _ ->
               nil
@@ -1968,15 +1973,45 @@ defmodule SymphonyElixir.Orchestrator do
         end)
       end)
 
+    # Fall back to searching by identifier in PR title (catches verbose branch names)
+    result =
+      result ||
+        Enum.find_value(repos, fn repo ->
+          case System.cmd("gh", ["pr", "list", "--repo", repo, "--search", identifier, "--state", "open", "--json", "url,headRefName", "--jq", ".[0]"], stderr_to_stdout: true) do
+            {output, 0} ->
+              parse_pr_result(output)
+
+            _ ->
+              nil
+          end
+        end)
+
     case result do
       nil -> :no_pr
-      url -> {:pr_exists, url}
+      %{url: url, branch: branch} -> {:pr_exists, url, branch}
+      url when is_binary(url) -> {:pr_exists, url, nil}
     end
   rescue
     _ -> :no_pr
   end
 
   defp check_existing_pr(_issue), do: :no_pr
+
+  defp parse_pr_result(output) do
+    trimmed = String.trim(output)
+
+    case Jason.decode(trimmed) do
+      {:ok, %{"url" => url, "headRefName" => branch}} when is_binary(url) and url != "" ->
+        %{url: url, branch: branch}
+
+      _ ->
+        if trimmed != "" and String.starts_with?(trimmed, "http") do
+          trimmed
+        else
+          nil
+        end
+    end
+  end
 
   defp repos_for_labels(labels) when is_list(labels) do
     has_platform = Enum.any?(labels, fn l -> String.downcase(l) |> String.starts_with?("2.0") end)

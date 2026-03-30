@@ -62,6 +62,17 @@ The orchestrator will stop your session and notify the team.
 - Do NOT start backend or frontend — they are already running.
 - Use `direnv exec .` prefix for ALL mix/npm commands in the working directory.
 
+{% if existing_pr_url %}
+## Existing PR
+
+A PR already exists for this issue. Do NOT create a new PR or branch.
+
+- **PR**: {{ existing_pr_url }}
+- **Branch**: {{ existing_pr_branch }}
+
+Check out this branch (`git checkout {{ existing_pr_branch }}`), review CI status and review comments, and push any fixes to this branch.
+{% endif %}
+
 ## Environment Notes
 
 - The `.env` file in the working directory has all credentials.

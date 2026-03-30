@@ -109,7 +109,7 @@ defmodule SymphonyElixir.Workflow.StageLoader do
   """
   @spec phase_content(%{String.t() => String.t()}, String.t()) :: String.t() | nil
   def phase_content(stages, phase_name) do
-    # Search all numbered stage files for the phase marker
+    # Search all numbered stage files for the phase name in headings
     stages
     |> Enum.filter(fn {name, _} -> Regex.match?(~r/^\d/, name) end)
     |> Enum.sort_by(fn {name, _} -> name end)
@@ -119,42 +119,46 @@ defmodule SymphonyElixir.Workflow.StageLoader do
   end
 
   defp extract_phase_section(content, phase_name) do
-    marker = "SYMPHONY_PHASE: #{phase_name}"
+    # Match phase name in ## headings (e.g. "## Step 2: Implement" matches "Implement",
+    # "## Step 4: Share Evidence on Linear" matches "Share Evidence")
+    normalized = String.downcase(phase_name)
 
-    if String.contains?(content, marker) do
-      content
-      |> String.split("\n")
-      |> find_phase_lines(marker, false, [])
-      |> case do
-        [] -> nil
-        lines -> Enum.join(lines, "\n") |> String.trim()
-      end
-    else
-      nil
+    lines = String.split(content, "\n")
+
+    case find_phase_heading(lines, normalized) do
+      nil -> nil
+      start_idx ->
+        lines
+        |> Enum.drop(start_idx)
+        |> collect_until_next_heading()
+        |> Enum.join("\n")
+        |> String.trim()
+        |> case do
+          "" -> nil
+          text -> text
+        end
     end
   end
 
-  # Walk lines, collecting from the marker's heading through to the next SYMPHONY_PHASE marker
-  defp find_phase_lines([], _marker, _collecting, acc), do: Enum.reverse(acc)
+  # Find the index of the first ## heading that contains the phase name as a
+  # distinct term (word boundary match to avoid "Implementation" matching "Implement")
+  defp find_phase_heading(lines, normalized_phase) do
+    pattern = Regex.compile!("\\b#{Regex.escape(normalized_phase)}\\b", "i")
 
-  defp find_phase_lines([line | rest], marker, false, acc) do
-    if String.contains?(line, marker) do
-      # Find the heading line before this marker (look back in acc or use the line before)
-      find_phase_lines(rest, marker, true, [line | acc])
-    else
-      find_phase_lines(rest, marker, false, acc)
-    end
+    Enum.find_index(lines, fn line ->
+      String.starts_with?(line, "## ") and Regex.match?(pattern, line)
+    end)
   end
 
-  defp find_phase_lines([line | rest], marker, true, acc) do
-    if String.contains?(line, "SYMPHONY_PHASE:") and not String.contains?(line, marker) do
-      # Hit the next phase marker — stop collecting but include the heading
-      # (the heading belongs to the next phase, so don't include this line)
-      Enum.reverse(acc)
-    else
-      find_phase_lines(rest, marker, true, [line | acc])
-    end
+  # Collect lines from a heading until the next ## heading (exclusive)
+  defp collect_until_next_heading([heading | rest]) do
+    body = Enum.take_while(rest, fn line ->
+      not String.starts_with?(line, "## ")
+    end)
+    [heading | body]
   end
+
+  defp collect_until_next_heading([]), do: []
 
   @doc """
   Loads the retask template from `_retask.md` in the stages directory.

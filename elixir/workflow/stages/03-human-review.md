@@ -1,4 +1,4 @@
-## Step 4: Share Evidence on Linear (MANDATORY — do NOT skip)
+## Share Evidence (MANDATORY — do NOT skip)
 
 You MUST post test results to the **Linear issue** — NOT to the GitHub PR. The team reviews evidence on Linear.
 

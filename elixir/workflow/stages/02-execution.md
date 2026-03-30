@@ -1,4 +1,4 @@
-## Step 2: Implement
+## Implement
 
 The branch `{{ issue.identifier | downcase }}` is already checked out in your working directory.
 
@@ -10,7 +10,7 @@ The branch `{{ issue.identifier | downcase }}` is already checked out in your wo
 
 **Before moving to Step 3, verify every item in your requirements checklist is addressed.** If you realize an item is more complex than expected, implement what you can and note the gap — do not silently skip it.
 
-## Step 3: Test
+## Test
 
 ### Unit tests (required)
 

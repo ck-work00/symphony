@@ -1,6 +1,8 @@
-## Step 1: Understand the Issue
+## Investigate
 
 Do NOT write any code. Do NOT search the codebase yet. Read first.
+
+### Read the issue
 
 1. Read the **full issue description** — every word, not just the title.
 2. Read **every comment** on the issue, oldest to newest. Comments often contain clarifications, updated requirements, or decisions that override the original description.
@@ -14,7 +16,7 @@ After reading, you should be able to answer:
 - What are ALL the acceptance criteria?
 - Are there open questions or ambiguities?
 
-## Step 1b: Investigate the Codebase
+### Search the codebase
 
 Now search the codebase. Do NOT write code — only read.
 
@@ -26,7 +28,7 @@ Now search the codebase. Do NOT write code — only read.
 
 Use what you learn to **refine your understanding of the requirements**. Sometimes reading the code reveals that a requirement is more nuanced than the issue describes, or that it touches more files than expected.
 
-## Step 1c: Post Your Implementation Plan to Linear
+### Post your implementation plan to Linear
 
 You MUST post a comment on the Linear issue before writing any code. This is how the team tracks your understanding and verifies your approach.
 
@@ -57,4 +59,4 @@ curl -s -X POST https://api.linear.app/graphql \
   -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "YOUR_COMMENT_HERE"}}'
 ```
 
-**Do NOT proceed to Step 2 until this comment is posted.** The plan is your contract — you will implement exactly what you listed, nothing more and nothing less. If a requirement is unclear, say so in the plan rather than guessing.
+**Do NOT proceed to Implement until this comment is posted.** The plan is your contract — you will implement exactly what you listed, nothing more and nothing less. If a requirement is unclear, say so in the plan rather than guessing.

@@ -171,7 +171,7 @@ defmodule SymphonyElixir.PhaseJudge do
   @doc "Check whether the Linear issue has screenshot evidence in its comments."
   @spec check_linear_evidence(map()) :: boolean()
   def check_linear_evidence(%{id: issue_id}) when is_binary(issue_id) do
-    case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
       {:ok, comments} ->
         all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
         String.contains?(all_text, "![") or String.contains?(all_text, "screenshot")

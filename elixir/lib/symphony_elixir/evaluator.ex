@@ -219,12 +219,16 @@ defmodule SymphonyElixir.Evaluator do
   defp check_linear_comments(nil), do: {false, false}
 
   defp check_linear_comments(issue_id) do
-    case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
       {:ok, comments} ->
         bodies = Enum.map(comments, & &1.body)
         all_text = Enum.join(bodies, "\n")
 
-        evidence = String.contains?(all_text, "![") or String.contains?(all_text, "screenshot")
+        evidence =
+          String.contains?(all_text, "![") or
+            String.contains?(all_text, "screenshot") or
+            String.contains?(all_text, "## Test Results")
+
         workpad = String.contains?(all_text, "## Codex Workpad") or String.contains?(all_text, "## Workpad")
 
         {evidence, workpad}
@@ -265,7 +269,7 @@ defmodule SymphonyElixir.Evaluator do
   defp check_plan_posted(nil), do: false
 
   defp check_plan_posted(issue_id) do
-    case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
       {:ok, comments} ->
         all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
 
@@ -289,7 +293,7 @@ defmodule SymphonyElixir.Evaluator do
       end
 
     no_changes_comment =
-      case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+      case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
         {:ok, comments} ->
           Enum.any?(comments, fn c ->
             String.contains?(String.downcase(c.body), "no simplification needed") or

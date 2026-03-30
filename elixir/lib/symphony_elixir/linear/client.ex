@@ -223,6 +223,34 @@ defmodule SymphonyElixir.Linear.Client do
     end
   end
 
+  @doc """
+  Fetch ALL comments on an issue (no @agent filter). Used by the evaluator
+  to check for evidence and plan comments posted by the agent itself.
+  """
+  @spec fetch_all_issue_comments(String.t()) :: {:ok, list(map())} | {:error, term()}
+  def fetch_all_issue_comments(issue_id) when is_binary(issue_id) do
+    case graphql(@comments_query, %{issueId: issue_id, first: 50}) do
+      {:ok, %{"data" => %{"issue" => %{"comments" => %{"nodes" => nodes}}}}} ->
+        comments =
+          Enum.map(nodes, fn node ->
+            %{
+              body: node["body"] || "",
+              author: get_in(node, ["user", "name"]) || "Unknown",
+              created_at: parse_datetime(node["createdAt"])
+            }
+          end)
+
+        {:ok, comments}
+
+      {:ok, _body} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        Logger.warning("Failed to fetch all comments for issue #{issue_id}: #{inspect(reason)}")
+        {:ok, []}
+    end
+  end
+
   @spec graphql(String.t(), map(), keyword()) :: {:ok, map()} | {:error, term()}
   def graphql(query, variables \\ %{}, opts \\ [])
       when is_binary(query) and is_map(variables) and is_list(opts) do

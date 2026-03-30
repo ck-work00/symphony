@@ -17,6 +17,17 @@ Look for:
 - Missing or misleading comments
 - Opportunities to reuse existing utilities or patterns in the codebase
 
+### Check test coverage
+
+Before simplifying, verify every changed source file has test coverage:
+
+```bash
+# Source files without corresponding test coverage
+git diff origin/main --name-only | grep -v _test
+```
+
+If any source file lacks tests, write them FIRST. This takes priority over simplification.
+
 ### Simplify
 
 Make targeted improvements. Rules:
@@ -24,6 +35,7 @@ Make targeted improvements. Rules:
 - Do not add features or change behavior
 - Do not add unnecessary abstractions for one-time operations
 - Prefer clarity over cleverness
+- Any new code you write also needs test coverage
 
 ### Run tests
 

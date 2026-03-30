@@ -61,6 +61,7 @@ The orchestrator will stop your session and notify the team.
 - Do NOT merge PRs — leave them for human review.
 - Do NOT start backend or frontend — they are already running.
 - Use `direnv exec .` prefix for ALL mix/npm commands in the working directory.
+- Every source file you change MUST have corresponding test coverage — no exceptions.
 
 {% if existing_pr_url %}
 ## Existing PR

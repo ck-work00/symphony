@@ -32,6 +32,20 @@ After all requirements are implemented:
 
 All tests must pass before proceeding.
 
+### Test coverage rule
+
+**Every source file you changed or created MUST have corresponding test coverage.** This is not optional. Before committing, verify:
+
+```bash
+# List source files you changed
+git diff origin/main --name-only | grep -v _test
+
+# List test files you changed
+git diff origin/main --name-only | grep _test
+```
+
+If a source file has no corresponding test file in the diff, write tests for it before proceeding. This applies to bug fixes, nil guards, helper extractions — every change, no matter how small.
+
 ### Commit and create PR
 
 1. Commit with a clear message: `{{ issue.identifier }}: <summary>`
@@ -45,4 +59,4 @@ All tests must pass before proceeding.
 ### Done
 
 You have completed the Implement phase. Stop here.
-Your deliverables: tests written, code implemented, PR created with CI running.
+Your deliverables: tests written for every changed source file, code implemented, PR created with CI running.

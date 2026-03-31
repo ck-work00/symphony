@@ -73,7 +73,11 @@ defmodule SymphonyElixir.PhaseJudge do
         |> then(fn p -> if pr_url != nil, do: ["Investigate", "Implement"] ++ p, else: p end)
         |> then(fn p -> if summary.has_evidence, do: ["Share Evidence"] ++ p, else: p end)
 
-      completed = Enum.uniq(from_history ++ from_external)
+      # Run live evidence check for phases that can't be determined from history alone
+      workspace_path = resolve_workspace(identifier)
+      live_evidence = if workspace_path, do: live_evidence_check(workspace_path, issue), else: []
+
+      completed = Enum.uniq(from_history ++ from_external ++ live_evidence)
       missing = @phases_in_order -- completed
 
       Logger.info("PhaseJudge pre-dispatch: issue=#{identifier} pr=#{pr_url} completed=#{inspect(completed)} missing=#{inspect(missing)} total_runs=#{summary.total_runs}")
@@ -186,4 +190,62 @@ defmodule SymphonyElixir.PhaseJudge do
   defp issue_id(%{identifier: id}) when is_binary(id), do: id
   defp issue_id(%{id: id}) when is_binary(id), do: id
   defp issue_id(_), do: "unknown"
+
+  # Quick workspace resolution for pre-dispatch checks
+  defp resolve_workspace(identifier) when is_binary(identifier) do
+    workspace = Path.join(SymphonyElixir.Config.workspace_root(), identifier)
+    slot_file = Path.join(workspace, ".symphony_slot")
+
+    case File.read(slot_file) do
+      {:ok, content} ->
+        case Regex.run(~r/DIRECTORY=(.+)/, content) do
+          [_, dir] ->
+            resolved = String.trim(dir)
+            if File.dir?(resolved), do: resolved
+
+          _ -> nil
+        end
+
+      _ -> nil
+    end
+  end
+
+  defp resolve_workspace(_), do: nil
+
+  # Check live workspace state for phases that need it
+  defp live_evidence_check(workspace_path, issue) do
+    phases = []
+
+    # Simplify: 2+ commits on branch
+    phases =
+      case System.cmd("sh", ["-c", "git log --oneline origin/main..HEAD 2>/dev/null"], cd: workspace_path, stderr_to_stdout: true) do
+        {output, 0} ->
+          commits = output |> String.split("\n", trim: true) |> length()
+          if commits >= 2, do: ["Simplify" | phases], else: phases
+
+        _ -> phases
+      end
+
+    # Plan posted: check Linear for requirements comment
+    issue_id = Map.get(issue, :id)
+
+    phases =
+      if is_binary(issue_id) do
+        case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
+          {:ok, comments} ->
+            all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
+
+            p = phases
+            p = if String.contains?(all_text, "## Requirements") or String.contains?(all_text, "- [ ]"), do: ["Investigate" | p], else: p
+            p = if String.contains?(all_text, "## Test Results"), do: ["Share Evidence" | p], else: p
+            p
+
+          _ -> phases
+        end
+      else
+        phases
+      end
+
+    Enum.uniq(phases)
+  end
 end

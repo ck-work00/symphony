@@ -46,5 +46,14 @@ The evaluator currently checks `tests_written: bool` — did any test file chang
 
 This would catch the GEA-2463 case where the agent wrote one test file for a large feature.
 
+## Judge should detect unanswered help requests on Linear
+When an agent posts a question or asks for help on the Linear issue, the judge should not dispatch the next phase until a human responds. Currently the orchestrator detects `SYMPHONY_NEEDS_HELP` in the output stream, but if the agent posts a question as a regular Linear comment, the judge ignores it and moves on.
+
+Needed:
+- After each phase, check Linear comments for unanswered agent questions (e.g. comments ending with `?` from the automation user with no subsequent human reply)
+- If found, hold dispatch and surface on the dashboard as "Waiting for human input"
+- Resume when a human replies (detected on next poll)
+- The dashboard should show these prominently — this is another intervention point
+
 ## Dashboard polling overhead
 When the dashboard LiveView is open, it polls `run_events` every second per expanded timeline. This hammers the SQLite DB with redundant queries. Should debounce or only poll when timeline is expanded.

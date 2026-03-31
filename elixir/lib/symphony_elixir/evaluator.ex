@@ -224,10 +224,13 @@ defmodule SymphonyElixir.Evaluator do
         bodies = Enum.map(comments, & &1.body)
         all_text = Enum.join(bodies, "\n")
 
+        has_screenshots = String.contains?(all_text, "![")
+        has_test_results = String.contains?(all_text, "## Test Results")
+
+        # Evidence requires either embedded screenshots or test results with screenshot mention
         evidence =
-          String.contains?(all_text, "![") or
-            String.contains?(all_text, "screenshot") or
-            String.contains?(all_text, "## Test Results")
+          has_screenshots or
+            (has_test_results and String.contains?(String.downcase(all_text), "screenshot"))
 
         workpad = String.contains?(all_text, "## Codex Workpad") or String.contains?(all_text, "## Workpad")
 

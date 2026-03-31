@@ -1965,36 +1965,58 @@ defmodule SymphonyElixir.Orchestrator do
   # Pre-dispatch PR check
   # ---------------------------------------------------------------------------
 
-  defp check_existing_pr(%Issue{identifier: identifier, labels: labels}) when is_binary(identifier) do
+  defp check_existing_pr(%Issue{identifier: identifier, labels: labels} = issue) when is_binary(identifier) do
     repos = repos_for_labels(labels)
-    branches = [identifier, String.downcase(identifier)]
+    lower = String.downcase(identifier)
 
-    # First try matching by branch name (exact match)
+    # Try exact branch names first, then prefix match for verbose Linear branch names
+    # (e.g. "gea-1205-some-description" starts with "gea-1205")
+    branches = [identifier, lower]
+
     result =
       Enum.find_value(repos, fn repo ->
+        # Exact branch match
         Enum.find_value(branches, fn branch ->
           case System.cmd("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url,headRefName", "--jq", ".[0]"], stderr_to_stdout: true) do
-            {output, 0} ->
-              parse_pr_result(output)
-
-            _ ->
-              nil
+            {output, 0} -> parse_pr_result(output)
+            _ -> nil
           end
         end)
       end)
 
-    # Fall back to searching by identifier in PR title (catches verbose branch names)
+    # Fall back: list all open PRs and find one whose branch starts with the identifier
     result =
       result ||
         Enum.find_value(repos, fn repo ->
-          case System.cmd("gh", ["pr", "list", "--repo", repo, "--search", identifier, "--state", "open", "--json", "url,headRefName", "--jq", ".[0]"], stderr_to_stdout: true) do
+          case System.cmd("gh", ["pr", "list", "--repo", repo, "--state", "open", "--json", "url,headRefName", "--limit", "50"], stderr_to_stdout: true) do
             {output, 0} ->
-              parse_pr_result(output)
-
-            _ ->
-              nil
+              case Jason.decode(output) do
+                {:ok, prs} when is_list(prs) ->
+                  Enum.find_value(prs, fn pr ->
+                    branch = pr["headRefName"] || ""
+                    if String.starts_with?(String.downcase(branch), lower <> "-") or String.downcase(branch) == lower do
+                      parse_pr_result(Jason.encode!(pr))
+                    end
+                  end)
+                _ -> nil
+              end
+            _ -> nil
           end
         end)
+
+    # Also check the issue's gitBranchName from Linear if available
+    result =
+      result ||
+        case Map.get(issue, :git_branch_name) do
+          branch when is_binary(branch) and branch != "" ->
+            Enum.find_value(repos, fn repo ->
+              case System.cmd("gh", ["pr", "list", "--repo", repo, "--head", branch, "--state", "open", "--json", "url,headRefName", "--jq", ".[0]"], stderr_to_stdout: true) do
+                {output, 0} -> parse_pr_result(output)
+                _ -> nil
+              end
+            end)
+          _ -> nil
+        end
 
     case result do
       nil -> :no_pr

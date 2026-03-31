@@ -276,6 +276,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td class="numeric"><%= format_runtime_and_turns(entry.started_at, entry.turn_count, @now) %></td>
                     <td>
                       <div class="detail-stack">
+                        <%= if entry[:frontend_url] do %>
+                          <a class="pr-link" href={entry.frontend_url} target="_blank"><%= entry.frontend_url %></a>
+                        <% end %>
                         <%= if entry[:pr_url] do %>
                           <a class="pr-link" href={entry.pr_url} target="_blank"><%= short_pr_url(entry.pr_url) %></a>
                         <% end %>

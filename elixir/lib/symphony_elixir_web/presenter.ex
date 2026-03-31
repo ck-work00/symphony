@@ -96,6 +96,8 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(_running, _retry), do: "running"
 
   defp running_entry_payload(entry) do
+    slot = read_slot_info(entry.identifier)
+
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
@@ -111,12 +113,42 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(entry.last_codex_message),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
+      frontend_url: slot[:frontend_url],
+      backend_url: slot[:backend_url],
       tokens: %{
         input_tokens: entry.codex_input_tokens,
         output_tokens: entry.codex_output_tokens,
         total_tokens: entry.codex_total_tokens
       }
     }
+  end
+
+  defp read_slot_info(identifier) when is_binary(identifier) do
+    workspace = Path.join(Config.workspace_root(), identifier)
+    slot_file = Path.join(workspace, ".symphony_slot")
+
+    case File.read(slot_file) do
+      {:ok, content} ->
+        frontend_port = extract_slot_value(content, "FRONTEND_PORT")
+        phoenix_port = extract_slot_value(content, "PHOENIX_PORT")
+
+        %{
+          frontend_url: if(frontend_port, do: "http://localhost:#{frontend_port}"),
+          backend_url: if(phoenix_port, do: "http://localhost:#{phoenix_port}")
+        }
+
+      _ ->
+        %{frontend_url: nil, backend_url: nil}
+    end
+  end
+
+  defp read_slot_info(_), do: %{frontend_url: nil, backend_url: nil}
+
+  defp extract_slot_value(content, key) do
+    case Regex.run(~r/#{key}=(\d+)/, content) do
+      [_, value] -> value
+      _ -> nil
+    end
   end
 
   defp retry_entry_payload(entry) do

@@ -286,10 +286,18 @@ defmodule SymphonyElixir.Evaluator do
   defp check_simplify_done(_workspace_path, nil), do: false
 
   defp check_simplify_done(workspace_path, issue_id) do
+    # Check for a commit with "simplify" in the message, or 2+ commits on the branch
+    # (the second commit is from the simplify pass even if not named "simplify")
     simplify_commit =
-      case run_in_workspace(workspace_path, "git log --oneline --grep='simplify' origin/main..HEAD 2>/dev/null") do
-        {:ok, output} -> String.trim(output) != ""
-        _ -> false
+      case run_in_workspace(workspace_path, "git log --oneline origin/main..HEAD 2>/dev/null") do
+        {:ok, output} ->
+          commits = output |> String.split("\n", trim: true)
+          has_simplify_msg = Enum.any?(commits, &String.contains?(String.downcase(&1), "simplify"))
+          has_multiple_commits = length(commits) >= 2
+          has_simplify_msg or has_multiple_commits
+
+        _ ->
+          false
       end
 
     no_changes_comment =

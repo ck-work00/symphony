@@ -338,8 +338,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   <th>Outcome</th>
                   <th>Phase</th>
                   <th>PR</th>
+                  <th>Error</th>
                   <th>Started</th>
-                  <th>Completed</th>
                   <th>Turns</th>
                   <th>Tokens</th>
                   <th></th>
@@ -376,8 +376,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <span class="muted">—</span>
                     <% end %>
                   </td>
+                  <td>
+                    <%= if entry[:error] do %>
+                      <span class="event-text" title={entry.error}><%= truncate(entry.error, 60) %></span>
+                    <% else %>
+                      <span class="muted">—</span>
+                    <% end %>
+                  </td>
                   <td class="mono numeric"><%= format_timestamp(entry[:started_at]) %></td>
-                  <td class="mono numeric"><%= format_timestamp(entry[:completed_at]) %></td>
                   <td class="numeric"><%= entry[:turn_count] || 0 %></td>
                   <td class="numeric"><%= format_int(entry[:tokens][:total_tokens] || 0) %></td>
                   <td>
@@ -474,9 +480,9 @@ defmodule SymphonyElixirWeb.DashboardLive do
                 <th>Score</th>
                 <th>Phase</th>
                 <th>PR</th>
+                <th>Changes</th>
                 <th>Duration</th>
                 <th>Turns</th>
-                <th>Tokens</th>
                 <th>Error</th>
               </tr>
             </thead>
@@ -510,12 +516,18 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <span class="muted">—</span>
                   <% end %>
                 </td>
+                <td>
+                  <%= if run.eval_files_changed && run.eval_files_changed > 0 do %>
+                    <span><%= run.eval_files_changed %> files<%= if run.eval_tests_written, do: " + tests", else: "" %></span>
+                  <% else %>
+                    <span class="muted">—</span>
+                  <% end %>
+                </td>
                 <td class="mono numeric"><%= format_duration_ms(run.wall_clock_ms) %></td>
                 <td class="numeric"><%= run.turns_used || 0 %></td>
-                <td class="numeric"><%= format_int(run.total_tokens || 0) %></td>
                 <td>
                   <%= if run.error_category do %>
-                    <span class="state-badge state-badge-danger"><%= run.error_category %></span>
+                    <span class="state-badge state-badge-danger" title={run.error_message || ""}><%= run.error_category %></span>
                   <% else %>
                     <span class="muted">—</span>
                   <% end %>

@@ -1463,6 +1463,13 @@ defmodule SymphonyElixir.Orchestrator do
     now = DateTime.utc_now()
     outcome = if(reason == :normal, do: "completed", else: "failed")
 
+    error =
+      case reason do
+        :normal -> nil
+        {%RuntimeError{message: msg}, _} -> msg |> String.slice(0, 200)
+        other -> inspect(other) |> String.slice(0, 200)
+      end
+
     summary = %{
       issue_id: running_entry[:identifier] || "unknown",
       issue_identifier: running_entry[:identifier],
@@ -1472,6 +1479,7 @@ defmodule SymphonyElixir.Orchestrator do
       phases_seen: Map.get(running_entry, :phases_seen, []),
       pr_url: Map.get(running_entry, :pr_url),
       outcome: outcome,
+      error: error,
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: %{
         input_tokens: Map.get(running_entry, :codex_input_tokens, 0),

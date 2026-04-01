@@ -1263,6 +1263,10 @@ defmodule SymphonyElixir.Orchestrator do
     case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, [%Issue{} = issue | _]} ->
         Logger.info("Manual retry via dashboard action: #{issue_context(issue)}")
+
+        # Clear failed run history so the judge doesn't block dispatch
+        History.delete_failed_runs(issue.identifier)
+
         state = dispatch_issue(state, issue)
         notify_dashboard()
         {:reply, :ok, state}

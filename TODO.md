@@ -55,5 +55,14 @@ Needed:
 - Resume when a human replies (detected on next poll)
 - The dashboard should show these prominently — this is another intervention point
 
+## Investigate Share Evidence phase crashes (exit 143 SIGTERM / exit 1)
+The Share Evidence phase consistently crashes with subprocess_exit:1 (context overflow) or subprocess_exit:143 (SIGTERM). Blocking Playwright MCP via --strict-mcp-config helped reduce context usage from 1M to 30-44K but agents still crash with SIGTERM.
+
+Possible causes:
+- The `before_run` hook runs the full slot claim script on every retry, which does `git reset`, `mix deps.get`, and `devenv-start.sh` — this may interfere with a running Claude process
+- Two agents dispatched simultaneously may have their hooks interfere with each other
+- The `safe_port_close` function sends `kill -- -$PID` (SIGTERM to process group) which may be triggered prematurely
+- The orchestrator may not cleanly terminate previous runs before dispatching retries
+
 ## Dashboard polling overhead
 When the dashboard LiveView is open, it polls `run_events` every second per expanded timeline. This hammers the SQLite DB with redundant queries. Should debounce or only poll when timeline is expanded.

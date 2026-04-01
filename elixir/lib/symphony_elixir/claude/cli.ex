@@ -161,9 +161,10 @@ defmodule SymphonyElixir.Claude.CLI do
     end
   end
 
-  # Playwright MCP adds 50+ tools to context, consuming ~200K tokens.
-  # We use Playwright via bash scripts instead, so block the MCP tools.
-  @disallowed_tools "mcp__plugin_playwright_playwright__browser_click,mcp__plugin_playwright_playwright__browser_close,mcp__plugin_playwright_playwright__browser_console_messages,mcp__plugin_playwright_playwright__browser_drag,mcp__plugin_playwright_playwright__browser_evaluate,mcp__plugin_playwright_playwright__browser_file_upload,mcp__plugin_playwright_playwright__browser_fill_form,mcp__plugin_playwright_playwright__browser_handle_dialog,mcp__plugin_playwright_playwright__browser_hover,mcp__plugin_playwright_playwright__browser_install,mcp__plugin_playwright_playwright__browser_navigate,mcp__plugin_playwright_playwright__browser_navigate_back,mcp__plugin_playwright_playwright__browser_network_requests,mcp__plugin_playwright_playwright__browser_press_key,mcp__plugin_playwright_playwright__browser_resize,mcp__plugin_playwright_playwright__browser_run_code,mcp__plugin_playwright_playwright__browser_select_option,mcp__plugin_playwright_playwright__browser_snapshot,mcp__plugin_playwright_playwright__browser_tabs,mcp__plugin_playwright_playwright__browser_take_screenshot,mcp__plugin_playwright_playwright__browser_type,mcp__plugin_playwright_playwright__browser_wait_for"
+  # Use --strict-mcp-config with only Linear MCP to prevent Playwright and
+  # other MCP plugins from loading. Playwright MCP adds 50+ tools (~200K tokens)
+  # that push agents past the 1M context limit. We use Playwright via bash instead.
+  @mcp_config_json "{\"mcpServers\":{}}"
 
   defp build_first_turn_args(prompt) do
     base = [
@@ -176,8 +177,9 @@ defmodule SymphonyElixir.Claude.CLI do
       to_string(Config.claude_max_turns()),
       "--permission-mode",
       Config.claude_permission_mode(),
-      "--disallowedTools",
-      @disallowed_tools
+      "--mcp-config",
+      @mcp_config_json,
+      "--strict-mcp-config"
     ]
 
     base
@@ -199,8 +201,9 @@ defmodule SymphonyElixir.Claude.CLI do
       to_string(Config.claude_max_turns()),
       "--permission-mode",
       Config.claude_permission_mode(),
-      "--disallowedTools",
-      @disallowed_tools
+      "--mcp-config",
+      @mcp_config_json,
+      "--strict-mcp-config"
     ]
 
     base

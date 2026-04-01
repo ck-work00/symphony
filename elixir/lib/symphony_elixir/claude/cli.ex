@@ -161,6 +161,10 @@ defmodule SymphonyElixir.Claude.CLI do
     end
   end
 
+  # Playwright MCP adds 50+ tools to context, consuming ~200K tokens.
+  # We use Playwright via bash scripts instead, so block the MCP tools.
+  @disallowed_tools "mcp__plugin_playwright_playwright__browser_click,mcp__plugin_playwright_playwright__browser_close,mcp__plugin_playwright_playwright__browser_console_messages,mcp__plugin_playwright_playwright__browser_drag,mcp__plugin_playwright_playwright__browser_evaluate,mcp__plugin_playwright_playwright__browser_file_upload,mcp__plugin_playwright_playwright__browser_fill_form,mcp__plugin_playwright_playwright__browser_handle_dialog,mcp__plugin_playwright_playwright__browser_hover,mcp__plugin_playwright_playwright__browser_install,mcp__plugin_playwright_playwright__browser_navigate,mcp__plugin_playwright_playwright__browser_navigate_back,mcp__plugin_playwright_playwright__browser_network_requests,mcp__plugin_playwright_playwright__browser_press_key,mcp__plugin_playwright_playwright__browser_resize,mcp__plugin_playwright_playwright__browser_run_code,mcp__plugin_playwright_playwright__browser_select_option,mcp__plugin_playwright_playwright__browser_snapshot,mcp__plugin_playwright_playwright__browser_tabs,mcp__plugin_playwright_playwright__browser_take_screenshot,mcp__plugin_playwright_playwright__browser_type,mcp__plugin_playwright_playwright__browser_wait_for"
+
   defp build_first_turn_args(prompt) do
     base = [
       "-p",
@@ -171,7 +175,9 @@ defmodule SymphonyElixir.Claude.CLI do
       "--max-turns",
       to_string(Config.claude_max_turns()),
       "--permission-mode",
-      Config.claude_permission_mode()
+      Config.claude_permission_mode(),
+      "--disallowedTools",
+      @disallowed_tools
     ]
 
     base
@@ -192,7 +198,9 @@ defmodule SymphonyElixir.Claude.CLI do
       "--max-turns",
       to_string(Config.claude_max_turns()),
       "--permission-mode",
-      Config.claude_permission_mode()
+      Config.claude_permission_mode(),
+      "--disallowedTools",
+      @disallowed_tools
     ]
 
     base

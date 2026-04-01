@@ -32,6 +32,7 @@ defmodule SymphonyElixir.PhaseJudge do
   @spec assess(map(), map() | nil) :: assessment()
   def assess(running_entry, eval_result \\ nil) do
     identifier = running_entry[:identifier]
+    issue = Map.get(running_entry, :issue)
     summary = History.issue_summary(identifier)
 
     if summary.total_runs >= @max_runs_per_issue do
@@ -42,6 +43,9 @@ defmodule SymphonyElixir.PhaseJudge do
       from_evidence = phases_from_evidence(eval_result)
       completed = Enum.uniq(from_history ++ from_evidence)
       missing = @phases_in_order -- completed
+
+      # Check for unaddressed @agent feedback on Linear — overrides to Implement
+      missing = maybe_override_for_feedback(missing, completed, issue, summary)
 
       Logger.info("PhaseJudge: issue=#{identifier} completed=#{inspect(completed)} missing=#{inspect(missing)} total_runs=#{summary.total_runs} evidence=#{inspect(summarize_evidence(eval_result))}")
 
@@ -80,6 +84,9 @@ defmodule SymphonyElixir.PhaseJudge do
       completed = Enum.uniq(from_history ++ from_external ++ live_evidence)
       missing = @phases_in_order -- completed
 
+      # Check for unaddressed @agent feedback on Linear — overrides to Implement
+      missing = maybe_override_for_feedback(missing, completed, issue, summary)
+
       Logger.info("PhaseJudge pre-dispatch: issue=#{identifier} pr=#{pr_url} completed=#{inspect(completed)} missing=#{inspect(missing)} total_runs=#{summary.total_runs}")
 
       cond do
@@ -95,6 +102,59 @@ defmodule SymphonyElixir.PhaseJudge do
 
   @doc "Maximum runs per issue before forced stop."
   def max_runs_per_issue, do: @max_runs_per_issue
+
+  # ---------------------------------------------------------------------------
+  # @agent feedback override
+  # ---------------------------------------------------------------------------
+
+  # If there's an unaddressed @agent comment on Linear (newer than the last
+  # agent run), override the next phase to Implement. Linear operator feedback
+  # is the highest priority signal.
+  defp maybe_override_for_feedback(missing, completed, issue, summary) do
+    if "Implement" in completed and has_unaddressed_agent_feedback?(issue, summary) do
+      Logger.info("PhaseJudge: unaddressed @agent feedback found, routing to Implement")
+      # Force Implement back into missing as the first phase
+      ["Implement" | (missing -- ["Implement"])]
+    else
+      missing
+    end
+  end
+
+  defp has_unaddressed_agent_feedback?(nil, _summary), do: false
+
+  defp has_unaddressed_agent_feedback?(issue, summary) do
+    issue_id = Map.get(issue, :id)
+    if not is_binary(issue_id), do: false, else: do_check_agent_feedback(issue_id, summary)
+  end
+
+  defp do_check_agent_feedback(issue_id, summary) do
+    # Fetch @agent-prefixed comments (human-to-agent messages)
+    case SymphonyElixir.Linear.Client.fetch_issue_comments(issue_id) do
+      {:ok, comments} when comments != [] ->
+        # Find the latest @agent comment
+        latest_feedback =
+          comments
+          |> Enum.filter(fn c -> c.created_at != nil end)
+          |> Enum.max_by(fn c -> DateTime.to_unix(c.created_at) end, fn -> nil end)
+
+        if latest_feedback do
+          # Check if this feedback is newer than the last completed run
+          last_run_at = summary.last_completed_at
+
+          if last_run_at == nil or DateTime.compare(latest_feedback.created_at, last_run_at) == :gt do
+            Logger.info("PhaseJudge: @agent feedback at #{DateTime.to_iso8601(latest_feedback.created_at)}: #{String.slice(latest_feedback.body, 0, 100)}")
+            true
+          else
+            false
+          end
+        else
+          false
+        end
+
+      _ ->
+        false
+    end
+  end
 
   # ---------------------------------------------------------------------------
   # Evidence-based phase detection (current run)

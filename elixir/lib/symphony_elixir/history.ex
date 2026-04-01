@@ -129,6 +129,12 @@ defmodule SymphonyElixir.History do
         []
       end
 
+    last_completed_at =
+      runs
+      |> Enum.filter(&(&1.finished_at != nil))
+      |> Enum.max_by(&DateTime.to_unix(&1.finished_at), fn -> nil end)
+      |> then(fn r -> r && r.finished_at end)
+
     %{
       total_runs: length(runs),
       runs: runs,
@@ -139,7 +145,8 @@ defmodule SymphonyElixir.History do
       has_tests: Enum.any?(runs, &(&1.eval_tests_written == true)),
       phases_seen: events |> extract_phases_from_events(),
       screenshots: events |> Enum.filter(&(&1.event_type == "screenshot_captured")),
-      latest_outcome: runs |> List.first() |> then(fn r -> r && r.outcome end)
+      latest_outcome: runs |> List.first() |> then(fn r -> r && r.outcome end),
+      last_completed_at: last_completed_at
     }
   end
 

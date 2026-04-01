@@ -1,8 +1,21 @@
 ## Simplify
 
-Review the PR changes for clarity, consistency, and unnecessary complexity.
+### Address PR review feedback
 
-### Review the diff
+First, check for review comments on the PR:
+
+```bash
+gh pr view $(gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number') --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
+gh api repos/{owner}/{repo}/pulls/$(gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number')/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
+```
+
+If there are actionable review comments (from CodeRabbit or human reviewers):
+1. Read each comment carefully
+2. Make the requested changes
+3. Write tests for any changes you make
+4. Push the fixes
+
+### Review the diff for simplification
 
 ```bash
 git diff origin/main --stat
@@ -14,19 +27,17 @@ Look for:
 - Overly complex conditionals that can be simplified
 - Inconsistent naming or patterns relative to the surrounding code
 - Dead code or unnecessary changes
-- Missing or misleading comments
 - Opportunities to reuse existing utilities or patterns in the codebase
 
 ### Check test coverage
 
-Before simplifying, verify every changed source file has test coverage:
+Verify every changed source file has test coverage:
 
 ```bash
-# Source files without corresponding test coverage
 git diff origin/main --name-only | grep -v _test
 ```
 
-If any source file lacks tests, write them FIRST. This takes priority over simplification.
+If any source file lacks tests, write them. This takes priority over simplification.
 
 ### Simplify
 
@@ -45,7 +56,7 @@ After any changes: `direnv exec . mix test && direnv exec . mix check`
 
 If you made changes:
 ```bash
-git add -A && git commit -m "{{ issue.identifier }}: simplify" && git push
+git add -A && git commit -m "{{ issue.identifier }}: simplify and address review feedback" && git push
 ```
 
 If no changes were needed, post a comment on the Linear issue: "Reviewed for simplification — no changes needed."

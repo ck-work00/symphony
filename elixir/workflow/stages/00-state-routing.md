@@ -3,24 +3,28 @@
 Before doing anything:
 
 1. `cd` to your working directory (from `.symphony_slot`)
-2. Read the CLAUDE.md in the working directory for project conventions
+2. Update and rebase with main:
+   ```bash
+   git fetch origin main
+   git checkout main
+   git pull --ff-only origin main
+   ```
+3. Read the CLAUDE.md in the working directory for project conventions
 
 ### Check for existing work
 
-3. Check for existing PRs for this issue — search by identifier, not current branch:
+4. Check for existing PRs for this issue — search by identifier, not current branch:
    ```bash
    gh pr list --search "{{ issue.identifier }}" --json number,url,state,headRefName --jq '.[]'
    ```
-4. Check current git state — branch, uncommitted changes
+5. Check current git state — branch, uncommitted changes
 
 **If an open PR exists for this issue:**
 - Check out that PR's branch: `git checkout <branch-name>` (use the `headRefName` from the PR)
+- Rebase onto latest main: `git rebase origin/main`
 - Do NOT create a new branch or new PR
-- Check CI status: `gh pr checks <number>`
-- Check for review comments: `gh pr view <number> --json reviews,comments`
-- Address any CI failures or review feedback, then push to the **same branch**
 - Skip to the Implement phase
 
 **If no PR exists:**
+- Create a branch from main: `git checkout -b {{ issue.identifier | downcase }}`
 - Start from the Investigate phase
-- When you create a branch, name it `{{ issue.identifier | downcase }}`

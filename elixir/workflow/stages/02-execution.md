@@ -56,26 +56,7 @@ If a source file has no corresponding test file in the diff, write tests for it 
    ```
 3. Post the PR link as a comment on the Linear issue.
 
-### Wait for CI and fix failures
-
-After creating the PR, wait for CI to run and check the result:
-
-```bash
-PR_NUM=$(gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number')
-# Wait up to 5 minutes for CI to start
-sleep 60
-gh pr checks $PR_NUM
-```
-
-If any checks fail:
-1. Read the failure output: `gh pr checks $PR_NUM --json name,state,output --jq '.[] | select(.state != "SUCCESS")'`
-2. Fix the issue locally
-3. Run `direnv exec . mix check` to verify it passes
-4. Commit and push the fix
-
-Do not leave the Implement phase with failing CI.
-
 ### Done
 
 You have completed the Implement phase. Stop here.
-Your deliverables: tests written for every changed source file, code implemented, PR created, CI passing.
+Your deliverables: tests written for every changed source file, code implemented, PR created with CI running.

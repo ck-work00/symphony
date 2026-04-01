@@ -1,12 +1,29 @@
 ## Simplify
 
-### Address PR review feedback
+### Check CI status
 
-First, check for review comments on the PR:
+First, check if CI passed on the PR:
 
 ```bash
-gh pr view $(gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number') --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
-gh api repos/{owner}/{repo}/pulls/$(gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number')/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
+PR_NUM=$(gh pr list --head "$(git branch --show-current)" --json number --jq '.[0].number')
+gh pr checks $PR_NUM
+```
+
+If any checks failed:
+1. Read the failure details: `gh pr checks $PR_NUM --json name,state --jq '.[] | select(.state != "SUCCESS")'`
+2. Fix the issue locally
+3. Run `direnv exec . mix check` to verify
+4. Commit and push the fix
+
+Do not proceed with simplification until CI is green.
+
+### Address PR review feedback
+
+Check for review comments on the PR:
+
+```bash
+gh pr view $PR_NUM --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
+gh api repos/{owner}/{repo}/pulls/$PR_NUM/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
 ```
 
 If there are actionable review comments (from CodeRabbit or human reviewers):
@@ -14,6 +31,16 @@ If there are actionable review comments (from CodeRabbit or human reviewers):
 2. Make the requested changes
 3. Write tests for any changes you make
 4. Push the fixes
+
+### Check test coverage
+
+Verify every changed source file has test coverage:
+
+```bash
+git diff origin/main --name-only | grep -v _test
+```
+
+If any source file lacks tests, write them. This takes priority over simplification.
 
 ### Review the diff for simplification
 
@@ -28,16 +55,6 @@ Look for:
 - Inconsistent naming or patterns relative to the surrounding code
 - Dead code or unnecessary changes
 - Opportunities to reuse existing utilities or patterns in the codebase
-
-### Check test coverage
-
-Verify every changed source file has test coverage:
-
-```bash
-git diff origin/main --name-only | grep -v _test
-```
-
-If any source file lacks tests, write them. This takes priority over simplification.
 
 ### Simplify
 

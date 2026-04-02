@@ -13,7 +13,6 @@ You MUST post test results to the **Linear issue** — NOT to the GitHub PR.
 2. Clear stale Vite state and restart the frontend:
    ```bash
    cd frontend && rm -rf node_modules/.vite
-   pkill -f "vite.*$FRONTEND_PORT" 2>/dev/null
    cd $DIRECTORY && ~/.claude/scripts/devenv-start.sh
    ```
 

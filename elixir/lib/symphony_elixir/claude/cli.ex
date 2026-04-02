@@ -301,13 +301,10 @@ defmodule SymphonyElixir.Claude.CLI do
         "'" <> String.replace(arg, "'", "'\\''") <> "'"
       end)
 
-    case :os.type() do
-      {:unix, :darwin} ->
-        "exec script -q /dev/null #{escaped_args}"
-
-      _ ->
-        "exec script -qfec #{shell_escape(escaped_args)} /dev/null"
-    end
+    # Run Claude directly without the `script` PTY wrapper.
+    # The wrapper was causing crashes on long sessions (1M+ tokens)
+    # due to PTY buffer limits. Stream-json output works without it.
+    "exec #{escaped_args}"
   end
 
   # macOS `script` may prepend control characters (^D=0x04, ^H=0x08, etc.)

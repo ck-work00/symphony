@@ -39,7 +39,7 @@ agent:
 claude:
   command: claude
   dangerously_skip_permissions: true
-  max_turns: 10
+  max_turns: 15
   stall_timeout_ms: 600000
   turn_timeout_ms: 3600000
 

@@ -22,7 +22,7 @@ Work through the requirements checklist one item at a time:
 
 1. Write the implementation code to make your failing tests pass.
 2. Run `direnv exec . mix test` after each requirement to verify nothing broke.
-3. Follow repository conventions (see CLAUDE.md).
+3. Follow existing patterns in the files you're editing.
 4. Keep changes focused — implement what you planned, nothing more.
 
 After all requirements are implemented:

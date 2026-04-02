@@ -23,7 +23,7 @@ Check for review comments on the PR:
 
 ```bash
 gh pr view $PR_NUM --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
-gh api repos/{owner}/{repo}/pulls/$PR_NUM/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
+gh pr view $PR_NUM --json comments --jq '.comments[] | "\(.author.login): \(.body)"'
 ```
 
 If there are actionable review comments (from CodeRabbit or human reviewers):
@@ -46,8 +46,9 @@ If any source file lacks tests, write them. This takes priority over simplificat
 
 ```bash
 git diff origin/main --stat
-git diff origin/main
 ```
+
+Then read specific files that look like they need simplification — do NOT dump the entire diff.
 
 Look for:
 - Duplicated logic that could be extracted

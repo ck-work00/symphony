@@ -32,7 +32,7 @@ Use what you learn to **refine your understanding of the requirements**. Sometim
 
 First, check if a plan has already been posted by fetching the issue comments and looking for "## Requirements". If a plan already exists, skip this step — do NOT post a duplicate.
 
-If no plan exists, post a comment on the Linear issue. Use the Linear MCP `save_comment` tool with the issue ID from the Issue Context above, or use curl.
+If no plan exists, post a comment on the Linear issue using curl:
 
 The comment must include:
 

@@ -178,11 +178,7 @@ defmodule SymphonyElixir.Claude.CLI do
       to_string(Config.claude_max_turns()),
       "--permission-mode",
       Config.claude_permission_mode(),
-      "--tools",
-      @agent_tools,
-      "--mcp-config",
-      @mcp_config_json,
-      "--strict-mcp-config"
+      "--bare"
     ]
 
     base
@@ -204,11 +200,7 @@ defmodule SymphonyElixir.Claude.CLI do
       to_string(Config.claude_max_turns()),
       "--permission-mode",
       Config.claude_permission_mode(),
-      "--tools",
-      @agent_tools,
-      "--mcp-config",
-      @mcp_config_json,
-      "--strict-mcp-config"
+      "--bare"
     ]
 
     base

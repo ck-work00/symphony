@@ -79,19 +79,3 @@ Check out this branch (`git checkout {{ existing_pr_branch }}`), review CI statu
 - The `.env` file in the working directory has all credentials.
 - `$LINEAR_API_KEY_AUTOMATION` is available in the environment for Linear API calls.
 
-{% if attempt %}
-## Continuation
-
-This is attempt #{{ attempt }}. The issue is still in an active state.
-Resume from where you left off. Check git log and git status in your working directory.
-Do not restart from scratch.
-
-If a PR already exists for this issue:
-1. Check CI: `gh pr checks <number>`. Fix failures and push.
-2. Fetch review comments:
-   ```bash
-   gh pr view <number> --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
-   gh api repos/{owner}/{repo}/pulls/<number>/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
-   ```
-3. Address any unresolved review comments, push fixes.
-{% endif %}

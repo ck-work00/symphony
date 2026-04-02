@@ -76,7 +76,13 @@ If you made changes:
 git add -A && git commit -m "{{ issue.identifier }}: simplify and address review feedback" && git push
 ```
 
-If no changes were needed, post a comment on the Linear issue: "Reviewed for simplification — no changes needed."
+If no changes were needed, post a comment on the **Linear issue** (NOT GitHub):
+```bash
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "Reviewed for simplification — no changes needed."}}'
+```
 
 ### Done
 

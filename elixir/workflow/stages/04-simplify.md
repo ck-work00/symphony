@@ -34,13 +34,7 @@ If there are actionable review comments (from CodeRabbit or human reviewers):
 
 ### Check test coverage
 
-Verify every changed source file has test coverage:
-
-```bash
-git diff origin/main --name-only | grep -v _test
-```
-
-If any source file lacks tests, write them. This takes priority over simplification.
+If the PR changed backend business logic without tests, add them before simplifying.
 
 ### Review the diff for simplification
 

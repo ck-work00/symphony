@@ -164,7 +164,7 @@ defmodule SymphonyElixir.Claude.CLI do
   # Restrict to core tools only. MCP plugins (Playwright, Linear, Tidewave)
   # add 50-80 tools that consume hundreds of thousands of context tokens.
   # Agents use curl/bash for Linear API and npx for Playwright instead.
-  @agent_tools "Bash,Edit,Read,Write,Glob,Grep"
+  @agent_tools "Agent,Bash,Edit,Read,Write,Glob,Grep"
   @mcp_config_json "{\"mcpServers\":{}}"
 
   defp build_first_turn_args(prompt) do

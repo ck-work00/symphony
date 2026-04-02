@@ -61,7 +61,7 @@ The orchestrator will stop your session and notify the team.
 - Do NOT merge PRs — leave them for human review.
 - Do NOT start backend or frontend — they are already running.
 - Use `direnv exec .` prefix for ALL mix/npm commands in the working directory.
-- Every source file you change MUST have corresponding test coverage (Implement and Simplify phases).
+- Backend (Elixir) changes should be test-driven — write tests for new features and behavior changes. 100% file-level coverage is not required, but core logic must be tested.
 
 {% if existing_pr_url %}
 ## Existing PR

@@ -6,15 +6,15 @@ Read the implementation plan from the Linear issue comments. Your plan was poste
 
 That checklist is your contract. Implement exactly what it says.
 
-### Write tests FIRST
+### Write tests FIRST (backend changes)
 
-For each requirement in the plan:
+For each backend (Elixir) requirement in the plan:
 
 1. **Write a failing test** that covers the requirement. Place tests in the corresponding `test/` directory following existing conventions.
 2. **Run the test** to confirm it fails: `direnv exec . mix test <test_file>`
 3. Only then move to the implementation step below.
 
-Cover the happy path, edge cases, and error conditions for each requirement. Do not skip test writing — it is not optional.
+Focus on testing core business logic and behavior changes. You don't need 100% coverage of every file, but new features and bug fixes must have tests that verify the expected behavior. Frontend (TypeScript) changes do not require unit tests unless the change is to shared logic or utilities.
 
 ### Implement to make tests pass
 
@@ -32,19 +32,19 @@ After all requirements are implemented:
 
 All tests must pass before proceeding.
 
-### Test coverage rule
+### Verify test coverage
 
-**Every source file you changed or created MUST have corresponding test coverage.** This is not optional. Before committing, verify:
+Before committing, check that your backend changes have tests:
 
 ```bash
-# List source files you changed
-git diff origin/main --name-only | grep -v _test
+# Elixir source files you changed
+git diff origin/main --name-only -- lib/
 
-# List test files you changed
-git diff origin/main --name-only | grep _test
+# Test files you changed
+git diff origin/main --name-only -- test/
 ```
 
-If a source file has no corresponding test file in the diff, write tests for it before proceeding. This applies to bug fixes, nil guards, helper extractions — every change, no matter how small.
+If you added or changed backend business logic without a corresponding test, add one. Frontend-only changes (components, styles) don't need unit tests.
 
 ### Commit and create PR
 

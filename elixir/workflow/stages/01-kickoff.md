@@ -20,6 +20,8 @@ After reading, you should be able to answer:
 
 Now search the codebase. Do NOT write code — only read.
 
+Use the **Agent tool with `subagent_type: "Explore"`** for broad searches — this runs in a separate context so your main context stays clean. Use Grep/Glob for targeted lookups.
+
 1. Find the relevant files, modules, and functions for each requirement.
 2. Trace the execution path. Understand how the current code works before deciding how to change it.
 3. Identify patterns and conventions used in the area you'll be changing.

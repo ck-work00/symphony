@@ -161,9 +161,10 @@ defmodule SymphonyElixir.Claude.CLI do
     end
   end
 
-  # Use --strict-mcp-config with only Linear MCP to prevent Playwright and
-  # other MCP plugins from loading. Playwright MCP adds 50+ tools (~200K tokens)
-  # that push agents past the 1M context limit. We use Playwright via bash instead.
+  # Restrict to core tools only. MCP plugins (Playwright, Linear, Tidewave)
+  # add 50-80 tools that consume hundreds of thousands of context tokens.
+  # Agents use curl/bash for Linear API and npx for Playwright instead.
+  @agent_tools "Bash,Edit,Read,Write,Glob,Grep"
   @mcp_config_json "{\"mcpServers\":{}}"
 
   defp build_first_turn_args(prompt) do
@@ -177,6 +178,8 @@ defmodule SymphonyElixir.Claude.CLI do
       to_string(Config.claude_max_turns()),
       "--permission-mode",
       Config.claude_permission_mode(),
+      "--tools",
+      @agent_tools,
       "--mcp-config",
       @mcp_config_json,
       "--strict-mcp-config"
@@ -201,6 +204,8 @@ defmodule SymphonyElixir.Claude.CLI do
       to_string(Config.claude_max_turns()),
       "--permission-mode",
       Config.claude_permission_mode(),
+      "--tools",
+      @agent_tools,
       "--mcp-config",
       @mcp_config_json,
       "--strict-mcp-config"

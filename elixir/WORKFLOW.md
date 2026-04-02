@@ -34,12 +34,12 @@ hooks:
 agent:
   backend: claude
   max_concurrent_agents: 2
-  max_turns: 10
+  max_turns: 20
 
 claude:
   command: claude
   dangerously_skip_permissions: true
-  max_turns: 25
+  max_turns: 10
   stall_timeout_ms: 600000
   turn_timeout_ms: 3600000
 

@@ -64,5 +64,20 @@ Possible causes:
 - The `safe_port_close` function sends `kill -- -$PID` (SIGTERM to process group) which may be triggered prematurely
 - The orchestrator may not cleanly terminate previous runs before dispatching retries
 
+## Completed Work view needs actionable detail
+The Completed Work section on the dashboard shows badges but no useful information about what happened. When an agent fails, the operator needs to understand:
+
+- What did the agent actually do? (files read, files changed, commands run)
+- Where did it fail? (which tool call, what error)
+- What was the last thing it tried to do?
+- Did it make any progress? (commits, Linear comments posted)
+- Was it a context issue, an API error, a code error, or a stuck loop?
+
+The error column currently shows a truncated RuntimeError which is useless. Consider:
+- An expandable detail panel per completed entry (like the timeline on running entries)
+- A summary line: "Read 12 files, edited 3, ran mix test, failed on context overflow"
+- Link to the session log if available
+- Show the last tool call and its result
+
 ## Dashboard polling overhead
 When the dashboard LiveView is open, it polls `run_events` every second per expanded timeline. This hammers the SQLite DB with redundant queries. Should debounce or only poll when timeline is expanded.

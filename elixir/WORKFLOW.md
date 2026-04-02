@@ -33,7 +33,7 @@ hooks:
 
 agent:
   backend: claude
-  max_concurrent_agents: 1
+  max_concurrent_agents: 2
   max_turns: 10
 
 claude:

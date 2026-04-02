@@ -18,10 +18,6 @@ tracker:
 
 polling:
   interval_ms: 120000
-  active_hours:
-    start: 8
-    end: 18
-    timezone: "America/Chicago"
 
 workspace:
   root: ~/code/symphony-workspaces

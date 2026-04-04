@@ -661,9 +661,29 @@ defmodule SymphonyElixir.StatusDashboard do
         "??:??:??"
       end
 
+    phase = entry[:phase] || "—"
+    turns = entry[:turn_count] || 0
+
     pr_part =
       if pr_url do
         " " <> colorize(pr_url, @ansi_cyan)
+      else
+        ""
+      end
+
+    detail_part =
+      if outcome != "completed" do
+        error = entry[:error]
+        last_message = entry[:last_message]
+
+        detail =
+          cond do
+            is_binary(error) and error != "" -> error
+            is_binary(last_message) and last_message != "" -> last_message
+            true -> nil
+          end
+
+        if detail, do: "\n│    " <> colorize(detail, @ansi_gray), else: ""
       else
         ""
       end
@@ -674,7 +694,12 @@ defmodule SymphonyElixir.StatusDashboard do
       colorize(identifier, @ansi_cyan) <>
       " " <>
       colorize(time_str, @ansi_gray) <>
-      pr_part
+      " " <>
+      colorize(phase, @ansi_magenta) <>
+      " " <>
+      colorize("#{turns}t", @ansi_yellow) <>
+      pr_part <>
+      detail_part
   end
 
   defp format_retry_rows(retrying) do

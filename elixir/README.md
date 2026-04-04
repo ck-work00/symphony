@@ -55,6 +55,26 @@ mise exec -- elixir --version
 
 ## Run
 
+### Development
+
+```bash
+cd symphony/elixir
+mix setup        # fetch deps
+mix phx.server   # start with dashboard + status TUI
+```
+
+The server reads `WORKFLOW.md` from the current directory, starts polling Linear, and serves the
+dashboard at the port configured in the `server.port` frontmatter field (default: 4040).
+
+### Production (escript)
+
+```bash
+mix build
+./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
+```
+
+### From scratch (upstream)
+
 ```bash
 git clone https://github.com/openai/symphony
 cd symphony/elixir

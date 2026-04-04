@@ -324,7 +324,7 @@ defmodule SymphonyElixir.Claude.StreamParser do
   # Screenshot URL extraction
   # ---------------------------------------------------------------------------
 
-  @linear_asset_url_regex ~r{https://uploads\.linear\.app/[^\s"'<>]+}
+  @linear_asset_url_regex ~r{https://uploads\.linear\.app/[^\s"'<>)]+}
 
   @doc """
   Extract Linear asset URLs from tool results (screenshot uploads).

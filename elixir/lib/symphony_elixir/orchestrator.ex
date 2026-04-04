@@ -105,6 +105,12 @@ defmodule SymphonyElixir.Orchestrator do
         {state, eval_result} = record_completed_history(state, running_entry, reason)
         session_id = running_entry_session_id(running_entry)
 
+        # Release the pool slot immediately — the agent process is done.
+        # If the issue gets retasked/retried, the slot will be re-claimed on next dispatch.
+        if identifier = running_entry[:identifier] do
+          Task.start(fn -> Workspace.release_pool_slot_for_issue(identifier) end)
+        end
+
         state =
           case reason do
             :normal ->
@@ -803,6 +809,15 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
 
+        # Claim the issue in Linear: move to "In Progress" and assign to us
+        case Tracker.claim_issue(issue.id, "In Progress") do
+          :ok ->
+            Logger.info("Claimed issue in Linear: #{issue_context(issue)}")
+
+          {:error, reason} ->
+            Logger.warning("Failed to claim issue in Linear: #{issue_context(issue)} reason=#{inspect(reason)}")
+        end
+
         # Remove any stale completed_history entry if this issue is being re-dispatched
         completed_history =
           Enum.reject(state.completed_history, fn entry ->
@@ -1264,6 +1279,9 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, [%Issue{} = issue | _]} ->
         Logger.info("Manual retry via dashboard action: #{issue_context(issue)}")
 
+        # Release any lingering pool slot so the fresh dispatch can claim one
+        Task.start(fn -> Workspace.release_pool_slot_for_issue(issue.identifier) end)
+
         # Clear failed run history so the judge doesn't block dispatch
         History.delete_failed_runs(issue.identifier)
 
@@ -1466,8 +1484,8 @@ defmodule SymphonyElixir.Orchestrator do
     error =
       case reason do
         :normal -> nil
-        {%RuntimeError{message: msg}, _} -> msg |> String.slice(0, 200)
-        other -> inspect(other) |> String.slice(0, 200)
+        {%RuntimeError{message: msg}, _} -> msg
+        other -> inspect(other)
       end
 
     summary = %{
@@ -1480,6 +1498,8 @@ defmodule SymphonyElixir.Orchestrator do
       pr_url: Map.get(running_entry, :pr_url),
       outcome: outcome,
       error: error,
+      last_event: Map.get(running_entry, :last_codex_event),
+      last_message: Map.get(running_entry, :last_codex_message),
       turn_count: Map.get(running_entry, :turn_count, 0),
       tokens: %{
         input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
@@ -1599,7 +1619,7 @@ defmodule SymphonyElixir.Orchestrator do
         true -> "crash"
       end
 
-    %{message: String.slice(message, 0, 500), category: category}
+    %{message: message, category: category}
   end
 
   defp refresh_runtime_config(%State{} = state) do

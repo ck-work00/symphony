@@ -378,7 +378,11 @@ defmodule SymphonyElixirWeb.DashboardLive do
                   </td>
                   <td>
                     <%= if entry[:error] do %>
-                      <span class="event-text" title={entry.error}><%= truncate(entry.error, 60) %></span>
+                      <pre class="error-full"><%= entry.error %></pre>
+                      <%= if entry[:last_message] do %>
+                        <p class="error-context-label">Last activity:</p>
+                        <pre class="error-full"><%= entry.last_message %></pre>
+                      <% end %>
                     <% else %>
                       <span class="muted">—</span>
                     <% end %>

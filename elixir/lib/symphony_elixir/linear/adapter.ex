@@ -23,6 +23,22 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  @claim_issue_mutation """
+  mutation SymphonyClaimIssue($issueId: String!, $stateId: String!, $assigneeId: String!) {
+    issueUpdate(id: $issueId, input: {stateId: $stateId, assigneeId: $assigneeId}) {
+      success
+    }
+  }
+  """
+
+  @viewer_query """
+  query SymphonyViewer {
+    viewer {
+      id
+    }
+  }
+  """
+
   @state_lookup_query """
   query SymphonyResolveStateId($issueId: String!, $stateName: String!) {
     issue(id: $issueId) {
@@ -70,6 +86,39 @@ defmodule SymphonyElixir.Linear.Adapter do
       false -> {:error, :issue_update_failed}
       {:error, reason} -> {:error, reason}
       _ -> {:error, :issue_update_failed}
+    end
+  end
+
+  @spec claim_issue(String.t(), String.t()) :: :ok | {:error, term()}
+  def claim_issue(issue_id, state_name)
+      when is_binary(issue_id) and is_binary(state_name) do
+    with {:ok, state_id} <- resolve_state_id(issue_id, state_name),
+         {:ok, assignee_id} <- resolve_viewer_id(),
+         {:ok, response} <-
+           client_module().graphql(@claim_issue_mutation, %{
+             issueId: issue_id,
+             stateId: state_id,
+             assigneeId: assignee_id
+           }),
+         true <- get_in(response, ["data", "issueUpdate", "success"]) == true do
+      :ok
+    else
+      false -> {:error, :issue_update_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :issue_update_failed}
+    end
+  end
+
+  defp resolve_viewer_id do
+    case client_module().graphql(@viewer_query, %{}) do
+      {:ok, %{"data" => %{"viewer" => %{"id" => id}}}} when is_binary(id) ->
+        {:ok, id}
+
+      {:ok, _} ->
+        {:error, :viewer_id_not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

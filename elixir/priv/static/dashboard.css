@@ -717,3 +717,23 @@ pre,
   height: 100%;
   object-fit: cover;
 }
+
+.error-full {
+  margin: 0.25rem 0;
+  padding: 0.5rem;
+  background: var(--surface-alt, #1a1a2e);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary, #aaa);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.error-context-label {
+  margin: 0.5rem 0 0.125rem;
+  font-size: 0.75rem;
+  color: var(--text-muted, #666);
+  font-weight: 600;
+}

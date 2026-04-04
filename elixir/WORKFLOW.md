@@ -25,8 +25,7 @@ workspace:
 hooks:
   timeout_ms: 300000
   before_run: |
-    ISSUE_ID="$(basename "$PWD")"
-    BRANCH="$(echo "$ISSUE_ID" | tr '[:upper:]' '[:lower:]')"
+    BRANCH="${SYMPHONY_BRANCH_NAME:-$(echo "$(basename "$PWD")" | tr '[:upper:]' '[:lower:]')}"
     ~/.claude/scripts/symphony-slot-claim.sh procurement "$BRANCH" "$PWD"
   before_remove: |
     ~/.claude/scripts/symphony-slot-release.sh "$PWD"
@@ -115,7 +114,7 @@ Execute these phases in order. Do not skip phases.
 
 ### Phase 3: Implement
 
-The branch `{{ issue.identifier | downcase }}` is already checked out in your working directory.
+The branch `{{ issue.branch_name }}` is already checked out in your working directory.
 
 1. Make the changes following the repository conventions (see CLAUDE.md).
 2. Keep changes focused — solve the issue, nothing more.
@@ -182,7 +181,7 @@ Post test results — including screenshots — to the Linear issue:
 1. Commit all changes with a clear message: `{{ issue.identifier }}: <summary>`
 2. Push the branch and create a PR:
    ```bash
-   git push -u origin {{ issue.identifier | downcase }}
+   git push -u origin {{ issue.branch_name }}
    gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>"
    ```
 3. Post the PR link as a comment on the Linear issue.

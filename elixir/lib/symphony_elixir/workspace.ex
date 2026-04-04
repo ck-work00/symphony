@@ -113,7 +113,8 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp release_pool_slot(workspace) do
+  @spec release_pool_slot(Path.t()) :: :ok
+  def release_pool_slot(workspace) do
     slot_file = Path.join(workspace, ".symphony_slot")
 
     if File.exists?(slot_file) do
@@ -131,7 +132,18 @@ defmodule SymphonyElixir.Workspace do
         end
       end
     end
+
+    :ok
   end
+
+  @spec release_pool_slot_for_issue(String.t()) :: :ok
+  def release_pool_slot_for_issue(identifier) when is_binary(identifier) do
+    safe_id = safe_identifier(identifier)
+    workspace = workspace_path_for_issue(safe_id)
+    release_pool_slot(workspace)
+  end
+
+  def release_pool_slot_for_issue(_identifier), do: :ok
 
   defp resolve_slot_workspace(workspace) do
     slot_file = Path.join(workspace, ".symphony_slot")
@@ -323,11 +335,21 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp issue_context(%{id: issue_id, identifier: identifier, labels: labels, branch_name: branch_name}) do
+    %{
+      issue_id: issue_id,
+      issue_identifier: identifier || "issue",
+      labels: labels || [],
+      branch_name: branch_name
+    }
+  end
+
   defp issue_context(%{id: issue_id, identifier: identifier, labels: labels}) do
     %{
       issue_id: issue_id,
       issue_identifier: identifier || "issue",
-      labels: labels || []
+      labels: labels || [],
+      branch_name: nil
     }
   end
 
@@ -335,7 +357,8 @@ defmodule SymphonyElixir.Workspace do
     %{
       issue_id: issue_id,
       issue_identifier: identifier || "issue",
-      labels: []
+      labels: [],
+      branch_name: nil
     }
   end
 
@@ -343,7 +366,8 @@ defmodule SymphonyElixir.Workspace do
     %{
       issue_id: nil,
       issue_identifier: identifier,
-      labels: []
+      labels: [],
+      branch_name: nil
     }
   end
 
@@ -351,7 +375,8 @@ defmodule SymphonyElixir.Workspace do
     %{
       issue_id: nil,
       issue_identifier: "issue",
-      labels: []
+      labels: [],
+      branch_name: nil
     }
   end
 
@@ -363,6 +388,7 @@ defmodule SymphonyElixir.Workspace do
       |> Map.put("SYMPHONY_ISSUE_ID", issue_context[:issue_id] || "")
       |> Map.put("SYMPHONY_ISSUE_IDENTIFIER", issue_context[:issue_identifier] || "")
       |> Map.put("SYMPHONY_ISSUE_LABELS", Enum.join(labels, ","))
+      |> Map.put("SYMPHONY_BRANCH_NAME", issue_context[:branch_name] || "")
 
     # Routing helper: determine repo from labels
     repo =

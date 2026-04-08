@@ -58,6 +58,7 @@ defmodule SymphonyElixir.Orchestrator do
       max_concurrent_agents: Config.max_concurrent_agents(),
       next_poll_due_at_ms: now_ms,
       poll_check_in_progress: false,
+      completed_history: load_recent_completed_history(),
       codex_totals: @empty_codex_totals,
       codex_rate_limits: nil
     }
@@ -66,6 +67,39 @@ defmodule SymphonyElixir.Orchestrator do
     :ok = schedule_tick(0)
 
     {:ok, state}
+  end
+
+  # Load recent finished runs from SQLite so the dashboard survives restarts.
+  defp load_recent_completed_history do
+    History.list_runs(limit: 20)
+    |> Enum.filter(&(&1.finished_at != nil))
+    |> Enum.map(&run_to_history_entry/1)
+  rescue
+    error ->
+      Logger.warning("Failed to load recent completed history: #{Exception.message(error)}")
+      []
+  end
+
+  defp run_to_history_entry(run) do
+    %{
+      issue_id: run.issue_identifier || run.issue_id,
+      issue_identifier: run.issue_identifier,
+      started_at: run.started_at,
+      completed_at: run.finished_at,
+      phase: run.final_phase,
+      phases_seen: [],
+      pr_url: run.eval_pr_url,
+      outcome: run.outcome || "unknown",
+      error: run.error_message,
+      last_event: nil,
+      last_message: nil,
+      turn_count: run.turns_used || 0,
+      tokens: %{
+        input_tokens: run.input_tokens || 0,
+        output_tokens: run.output_tokens || 0,
+        total_tokens: run.total_tokens || 0
+      }
+    }
   end
 
   @impl true

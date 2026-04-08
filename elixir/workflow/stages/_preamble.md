@@ -47,12 +47,22 @@ No description provided.
 
 ## If You Get Stuck
 
-If you are blocked by something you cannot resolve (missing permissions, unclear requirements, infrastructure issues), output this on its own line and STOP:
+If you are BLOCKED by something you cannot resolve, output this on its own line and STOP:
 ```
 SYMPHONY_NEEDS_HELP: <description of what you're stuck on>
 ```
 
-The orchestrator will stop your session and notify the team.
+Use this ONLY for true blockers:
+- Missing credentials or permissions
+- Unclear requirements needing human clarification
+- Broken tooling or missing dependencies
+
+Do NOT use this for:
+- "PR is ready, awaiting merge" — just end your turn
+- "Work is complete" — just end your turn
+- "Nothing to do this turn" — just end your turn
+
+The orchestrator notifies the team and moves the issue to a review state when this fires, so misusing it spams the team.
 
 ## Guardrails
 

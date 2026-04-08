@@ -30,7 +30,11 @@ gh pr list --head "$(git branch --show-current)" --json number,url,state --jq '.
    ```
 4. **If CI failed**: Fix the failing tests/checks, push, then check again.
 5. **If there are unaddressed review comments**: Read each comment, make the requested changes, push, and re-run tests.
-6. **If CI is green and all review comments are addressed**: You are done.
+6. **If CI is green, no @agent comments, and all review comments are addressed**: You are DONE. End your turn cleanly with NO further action.
+   - Do NOT post a comment saying you're done.
+   - Do NOT post `SYMPHONY_NEEDS_HELP` — that is only for things you cannot resolve.
+   - Do NOT re-run tests, take screenshots, or check status again.
+   - Just stop. The orchestrator will see the PR is healthy and stop dispatching you.
 
 **ALWAYS fetch and rebase before pushing:**
 ```bash
@@ -43,3 +47,12 @@ Continue working toward shipping one.
 
 Do NOT re-run tests or post additional test reports if the PR is already open and CI is passing.
 Do NOT look for more work. Do NOT expand scope.
+
+## When to use SYMPHONY_NEEDS_HELP
+
+Only use this marker if you are BLOCKED by something you cannot resolve:
+- Missing credentials or permissions
+- Unclear requirements that need human clarification
+- Infrastructure issues (broken tooling, missing dependencies)
+
+"Waiting for human merge" is NOT a blocker. "PR ready and CI green" is NOT a blocker. In those cases, just end your turn silently.

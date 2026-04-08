@@ -159,6 +159,15 @@ defmodule SymphonyElixir.Claude.AgentRunner do
         )
 
         cond do
+          # If the agent made no progress this turn AND the judge says all
+          # phases are complete, stop now. This catches "PR is ready, agent
+          # has nothing to do" and prevents SYMPHONY_NEEDS_HELP loops.
+          # Only consult the judge on no-progress turns so we don't interrupt
+          # an agent that's actively addressing CR comments or other work.
+          turn_number > 1 and not made_progress and judge_says_done?(issue, workspace) ->
+            Logger.info("PhaseJudge: all phases complete and no progress for #{issue_context(issue)}; stopping")
+            :ok
+
           next_no_progress >= 3 ->
             Logger.warning("No progress for #{next_no_progress} consecutive turns for #{issue_context(issue)}, stopping early")
 
@@ -287,6 +296,46 @@ defmodule SymphonyElixir.Claude.AgentRunner do
       _ ->
         0
     end
+  end
+
+  defp judge_says_done?(issue, workspace) do
+    pr_url = lookup_pr_url(workspace)
+
+    case SymphonyElixir.PhaseJudge.pre_dispatch_assess(issue, pr_url) do
+      :done -> true
+      :max_runs_reached -> true
+      _ -> false
+    end
+  rescue
+    error ->
+      Logger.warning("Judge check between turns failed for #{issue_context(issue)}: #{Exception.message(error)}")
+      false
+  end
+
+  defp lookup_pr_url(workspace) do
+    case System.cmd("git", ["branch", "--show-current"], cd: workspace, stderr_to_stdout: true) do
+      {branch_output, 0} ->
+        branch = String.trim(branch_output)
+
+        if branch != "" and branch != "main" do
+          case System.cmd("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"],
+                 cd: workspace, stderr_to_stdout: true) do
+            {output, 0} ->
+              url = String.trim(output)
+              if url != "" and String.starts_with?(url, "http"), do: url, else: nil
+
+            _ ->
+              nil
+          end
+        else
+          nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
   end
 
   defp count_new_commits(workspace) do

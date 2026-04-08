@@ -279,7 +279,9 @@ defmodule SymphonyElixir.Orchestrator do
       Logger.debug("Outside active hours, skipping dispatch")
       state
     else
-      do_dispatch(state)
+      state
+      |> check_completed_pr_health()
+      |> do_dispatch()
     end
   end
 
@@ -899,6 +901,7 @@ defmodule SymphonyElixir.Orchestrator do
     %{
       state
       | completed: MapSet.put(state.completed, issue_id),
+        claimed: MapSet.delete(state.claimed, issue_id),
         retry_attempts: Map.delete(state.retry_attempts, issue_id)
     }
   end
@@ -1277,17 +1280,7 @@ defmodule SymphonyElixir.Orchestrator do
   def handle_call({:retry_issue_manual, issue_id}, _from, state) do
     case Tracker.fetch_issue_states_by_ids([issue_id]) do
       {:ok, [%Issue{} = issue | _]} ->
-        Logger.info("Manual retry via dashboard action: #{issue_context(issue)}")
-
-        # Release any lingering pool slot so the fresh dispatch can claim one
-        Task.start(fn -> Workspace.release_pool_slot_for_issue(issue.identifier) end)
-
-        # Clear failed run history so the judge doesn't block dispatch
-        History.delete_failed_runs(issue.identifier)
-
-        state = dispatch_issue(state, issue)
-        notify_dashboard()
-        {:reply, :ok, state}
+        {:reply, :ok, do_force_dispatch(state, issue)}
 
       {:ok, []} ->
         {:reply, {:error, :not_found}, state}
@@ -1295,6 +1288,45 @@ defmodule SymphonyElixir.Orchestrator do
       {:error, reason} ->
         {:reply, {:error, reason}, state}
     end
+  end
+
+  def handle_call({:force_dispatch_identifier, identifier}, _from, state) do
+    normalized = identifier |> to_string() |> String.trim() |> String.upcase()
+
+    case Tracker.fetch_candidate_issues() do
+      {:ok, issues} ->
+        case Enum.find(issues, fn i -> i.identifier == normalized end) do
+          %Issue{} = issue ->
+            {:reply, :ok, do_force_dispatch(state, issue)}
+
+          nil ->
+            {:reply, {:error, :not_found}, state}
+        end
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  defp do_force_dispatch(state, %Issue{} = issue) do
+    Logger.info("Manual force dispatch: #{issue_context(issue)}")
+
+    # Release any lingering pool slot so the fresh dispatch can claim one
+    Task.start(fn -> Workspace.release_pool_slot_for_issue(issue.identifier) end)
+
+    # Clear all run history so the PhaseJudge doesn't block dispatch
+    History.delete_all_runs(issue.identifier)
+
+    # Clear in-memory tracking so should_dispatch_issue? passes
+    state = %{
+      state
+      | completed: MapSet.delete(state.completed, issue.id),
+        claimed: MapSet.delete(state.claimed, issue.id)
+    }
+
+    state = dispatch_issue(state, issue)
+    notify_dashboard()
+    state
   end
 
   def handle_call({:cancel_retry, issue_id}, _from, state) do
@@ -1997,6 +2029,71 @@ defmodule SymphonyElixir.Orchestrator do
   # Pre-dispatch PR check
   # ---------------------------------------------------------------------------
 
+  # Scan completed issues for open PRs with merge conflicts and re-dispatch them
+  defp check_completed_pr_health(%State{completed: completed} = state) do
+    if MapSet.size(completed) == 0 or available_slots(state) == 0 do
+      state
+    else
+      # Collect completed entries that have PRs
+      entries_with_prs =
+        state.completed_history
+        |> Enum.filter(fn entry ->
+          entry[:outcome] == "completed" and is_binary(entry[:pr_url])
+        end)
+        |> Enum.uniq_by(& &1[:issue_identifier])
+
+      Enum.reduce(entries_with_prs, state, fn entry, state_acc ->
+        if available_slots(state_acc) == 0 do
+          state_acc
+        else
+          check_completed_entry_pr(state_acc, entry)
+        end
+      end)
+    end
+  end
+
+  defp check_completed_entry_pr(%State{} = state, entry) do
+    pr_url = entry[:pr_url]
+    identifier = entry[:issue_identifier]
+
+    if pr_conflicting?(pr_url) do
+      Logger.info("PR has merge conflicts for completed issue #{identifier}: #{pr_url}")
+
+      # Find the Linear UUID for this identifier in the completed set
+      # by checking the history database
+      case History.runs_for_issue(identifier) do
+        [%{issue_id: issue_id} | _] when is_binary(issue_id) ->
+          %{state | completed: MapSet.delete(state.completed, issue_id)}
+
+        _ ->
+          state
+      end
+    else
+      state
+    end
+  rescue
+    error ->
+      Logger.debug("PR health check failed for #{entry[:issue_identifier]}: #{Exception.message(error)}")
+      state
+  end
+
+  defp pr_conflicting?(pr_url) when is_binary(pr_url) do
+    # Extract owner/repo and PR number from URL
+    case Regex.run(~r{github\.com/([^/]+/[^/]+)/pull/(\d+)}, pr_url) do
+      [_, repo, number] ->
+        case System.cmd("gh", ["pr", "view", number, "--repo", repo, "--json", "mergeable", "--jq", ".mergeable"],
+               stderr_to_stdout: true) do
+          {output, 0} -> String.trim(output) == "CONFLICTING"
+          _ -> false
+        end
+      _ -> false
+    end
+  rescue
+    _ -> false
+  end
+
+  defp pr_conflicting?(_), do: false
+
   defp check_existing_pr(%Issue{identifier: identifier, labels: labels} = issue) when is_binary(identifier) do
     repos = repos_for_labels(labels)
     lower = String.downcase(identifier)
@@ -2229,6 +2326,15 @@ defmodule SymphonyElixir.Orchestrator do
   @spec retry_issue_manual(GenServer.server(), String.t()) :: :ok | {:error, :not_found}
   def retry_issue_manual(server, issue_id) do
     GenServer.call(server, {:retry_issue_manual, issue_id})
+  end
+
+  @spec force_dispatch_identifier(String.t()) :: :ok | {:error, term()}
+  def force_dispatch_identifier(identifier),
+    do: force_dispatch_identifier(__MODULE__, identifier)
+
+  @spec force_dispatch_identifier(GenServer.server(), String.t()) :: :ok | {:error, term()}
+  def force_dispatch_identifier(server, identifier) do
+    GenServer.call(server, {:force_dispatch_identifier, identifier})
   end
 
   @spec cancel_retry(String.t()) :: :ok | {:error, :not_found}

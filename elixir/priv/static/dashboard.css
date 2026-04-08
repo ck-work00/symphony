@@ -718,6 +718,70 @@ pre,
   object-fit: cover;
 }
 
+.screenshot-links {
+  display: flex;
+  gap: 2px;
+}
+
+.screenshot-icon {
+  font-size: 0.9rem;
+  cursor: default;
+}
+
+.force-dispatch-card {
+  background: var(--surface, #1a1a2e);
+  border: 1px solid var(--border, #2a2a3e);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+
+.force-dispatch-form {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.force-dispatch-form label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary, #aaa);
+}
+
+.force-dispatch-form input {
+  flex: 1;
+  min-width: 200px;
+  padding: 0.4rem 0.6rem;
+  background: var(--surface-alt, #0f0f1e);
+  border: 1px solid var(--border, #2a2a3e);
+  border-radius: 4px;
+  color: var(--text, #fff);
+  font-family: inherit;
+  font-size: 0.85rem;
+}
+
+.force-dispatch-form button {
+  padding: 0.4rem 0.9rem;
+  background: var(--accent, #4a7cff);
+  border: none;
+  border-radius: 4px;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.force-dispatch-form button:hover {
+  opacity: 0.9;
+}
+
+.force-dispatch-message {
+  margin: 0.5rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #aaa);
+}
+
 .error-full {
   margin: 0.25rem 0;
   padding: 0.5rem;

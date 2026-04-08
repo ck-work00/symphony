@@ -111,6 +111,22 @@ defmodule SymphonyElixir.History do
     :ok
   end
 
+  @spec delete_all_runs(String.t()) :: :ok
+  def delete_all_runs(issue_identifier) do
+    run_ids =
+      Run
+      |> where([r], r.issue_identifier == ^issue_identifier)
+      |> select([r], r.id)
+      |> Repo.all()
+
+    if run_ids != [] do
+      RunEvent |> where([e], e.run_id in ^run_ids) |> Repo.delete_all()
+      Run |> where([r], r.id in ^run_ids) |> Repo.delete_all()
+    end
+
+    :ok
+  end
+
   @spec runs_for_issue(String.t()) :: [Run.t()]
   def runs_for_issue(issue_identifier) do
     Run

@@ -46,15 +46,35 @@ git diff origin/main --name-only -- test/
 
 If you added or changed backend business logic without a corresponding test, add one. Frontend-only changes (components, styles) don't need unit tests.
 
+### Check Linear issue for @agent feedback
+
+Before committing, check the Linear issue for any `@agent` comments with instructions from the team:
+
+```bash
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "query { issue(id: \"{{ issue.id }}\") { comments { nodes { body createdAt user { name } } } } }"}' \
+  | python3 -c "import sys,json; [print(f'{c[\"user\"][\"name\"]}: {c[\"body\"]}') for c in json.load(sys.stdin)['data']['issue']['comments']['nodes'] if '@agent' in c['body'].lower()]"
+```
+
+If there are `@agent` comments with instructions, follow them before proceeding.
+
 ### Commit and create PR
 
 1. Commit with a clear message: `{{ issue.identifier }}: <summary>`
-2. Push and create PR:
+2. Fetch and rebase before pushing — ALWAYS:
    ```bash
-   git push -u origin {{ issue.identifier | downcase }}
-   gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>"
+   git fetch origin main
+   git rebase origin/main
    ```
-3. Post the PR link as a comment on the Linear issue.
+   If there are conflicts, resolve them before continuing.
+3. Push and create PR:
+   ```bash
+   git push -u origin {{ issue.branch_name }}
+   gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>\n\nLinear: {{ issue.identifier }}"
+   ```
+4. Post the PR link as a comment on the Linear issue.
 
 ### Done
 

@@ -20,6 +20,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
       |> assign(:history_runs, [])
       |> assign(:metrics, nil)
       |> assign(:expanded_timelines, MapSet.new())
+      |> assign(:force_dispatch_message, nil)
 
     if connected?(socket) do
       :ok = ObservabilityPubSub.subscribe()
@@ -57,6 +58,19 @@ defmodule SymphonyElixirWeb.DashboardLive do
   def handle_event("retry_issue", %{"issue-id" => issue_id}, socket) do
     Orchestrator.retry_issue_manual(orchestrator(), issue_id)
     {:noreply, assign(socket, :payload, load_payload())}
+  end
+
+  def handle_event("force_dispatch", %{"identifier" => identifier}, socket) do
+    case Orchestrator.force_dispatch_identifier(orchestrator(), identifier) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:payload, load_payload())
+         |> assign(:force_dispatch_message, "Dispatched #{identifier}")}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, :force_dispatch_message, "Failed: #{inspect(reason)}")}
+    end
   end
 
   def handle_event("cancel_retry", %{"issue-id" => issue_id}, socket) do
@@ -121,6 +135,24 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
         </div>
       </header>
+
+      <div class="force-dispatch-card">
+        <form phx-submit="force_dispatch" class="force-dispatch-form">
+          <label for="force-dispatch-input">Force dispatch an issue</label>
+          <input
+            id="force-dispatch-input"
+            type="text"
+            name="identifier"
+            placeholder="GEA-2598"
+            autocomplete="off"
+            required
+          />
+          <button type="submit">Dispatch</button>
+        </form>
+        <%= if assigns[:force_dispatch_message] do %>
+          <p class="force-dispatch-message"><%= @force_dispatch_message %></p>
+        <% end %>
+      </div>
 
       <nav class="tab-bar">
         <button
@@ -261,15 +293,14 @@ defmodule SymphonyElixirWeb.DashboardLive do
                         </span>
                       </div>
                       <%= if entry[:screenshot_urls] != [] do %>
-                        <div class="screenshot-thumbs">
-                          <a
-                            :for={url <- entry[:screenshot_urls] || []}
-                            href={url}
-                            target="_blank"
-                            class="screenshot-thumb"
+                        <div class="screenshot-links">
+                          <span
+                            :for={_url <- Enum.filter(entry[:screenshot_urls] || [], &(&1 != "screenshot_pending"))}
+                            class="screenshot-icon"
+                            title="Screenshot captured"
                           >
-                            <img src={url} />
-                          </a>
+                            &#128247;
+                          </span>
                         </div>
                       <% end %>
                     </td>

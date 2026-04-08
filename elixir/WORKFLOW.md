@@ -127,44 +127,26 @@ The branch `{{ issue.branch_name }}` is already checked out in your working dire
 1. **Write tests first**: Before running the test suite, write unit tests for every significant code path you changed or added. Cover the happy path, edge cases, and error conditions. Place tests in the corresponding `test/` directory following existing conventions.
 2. **Static analysis**: `direnv exec . mix check`
 3. **Unit tests**: `direnv exec . mix test` (full suite). All new and existing tests must pass. If any fail, fix the code or tests before proceeding.
-4. **Browser testing**: Use Playwright MCP tools to verify the fix works in a real browser:
+4. **Browser testing**: Verify the fix works in a real browser:
    - Backend and frontend are already running on the ports from `.symphony_slot`
-   - Navigate to the relevant page
-   - Exercise the flow that the issue describes
-   - Take screenshots at key steps using `mcp__playwright__browser_take_screenshot`
+   - Log in with `$(whoami)+dispatcher@gearflow.com` / `Test1234!`
+   - Smoke test: navigate to `/tickets`, `/equipment`, `/mobilizations`, `/maintenance` — confirm they load
+   - Take a screenshot of at least the Equipment page as baseline evidence
+   - If the change is user-facing: navigate to affected pages, exercise the flow, take screenshots at key steps
+   - If role restrictions are involved, test with the appropriate role accounts (requester, manager, etc.)
    - Save each screenshot to a file in this scratch workspace directory
 
 ### Phase 5: Share Evidence
 
 Post test results — including screenshots — to the Linear issue:
 
-1. **Upload screenshots to Linear** using their file upload API:
+1. **Upload screenshots to Linear** using the helper script:
    ```bash
-   # Step 1: Get the file size and request an upload URL
-   FILE_SIZE=$(wc -c < screenshot.png | tr -d ' ')
-   UPLOAD_RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
-     -H "Authorization: $LINEAR_API_KEY" \
-     -H "Content-Type: application/json" \
-     -d "{\"query\": \"mutation { fileUpload(contentType: \\\"image/png\\\", filename: \\\"screenshot.png\\\", size: $FILE_SIZE) { success uploadFile { uploadUrl assetUrl headers { key value } } } }\"}")
-
-   UPLOAD_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['fileUpload']['uploadFile']['uploadUrl'])")
-   ASSET_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['fileUpload']['uploadFile']['assetUrl'])")
-
-   # Step 2: Extract required headers and upload the file
-   # The headers array contains required GCS headers (x-goog-content-length-range, Content-Disposition)
-   HEADER_ARGS=$(echo "$UPLOAD_RESPONSE" | python3 -c "
-   import sys, json
-   headers = json.load(sys.stdin)['data']['fileUpload']['uploadFile']['headers']
-   for h in headers:
-       print(f'-H \"{h[\"key\"]}: {h[\"value\"]}\"')
-   ")
-   eval curl -s -X PUT "\"$UPLOAD_URL\"" \
-     -H "\"Content-Type: image/png\"" \
-     $HEADER_ARGS \
-     --data-binary @screenshot.png
-
-   # Step 3: Use $ASSET_URL in your comment markdown: ![description](ASSET_URL)
+   ASSET_URL=$(~/.claude/scripts/linear-upload-image.sh screenshot.png)
    ```
+   This prints the permanent asset URL. Use it in comments as `![description](ASSET_URL)`.
+   **IMPORTANT**: Only use the URL printed by this script. Do NOT use any signed or temporary URLs.
+
 2. **Post a comment** with test summary and embedded screenshot images:
    ```bash
    curl -s -X POST https://api.linear.app/graphql \
@@ -172,19 +154,25 @@ Post test results — including screenshots — to the Linear issue:
      -H "Content-Type: application/json" \
      -d '{
        "query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }",
-       "variables": {"id": "{{ issue.id }}", "body": "## Test Results\n\nSummary of what was tested.\n\n![Screenshot description](ASSET_URL_HERE)"}
+       "variables": {"id": "{{ issue.id }}", "body": "## Test Results\n\nSummary of what was tested.\n\n![Screenshot description]('"$ASSET_URL"')"}
      }'
    ```
 
 ### Phase 6: Ship
 
 1. Commit all changes with a clear message: `{{ issue.identifier }}: <summary>`
-2. Push the branch and create a PR:
+2. Fetch and rebase before pushing — ALWAYS:
+   ```bash
+   git fetch origin main
+   git rebase origin/main
+   ```
+   If there are conflicts, resolve them before continuing.
+3. Push the branch and create a PR:
    ```bash
    git push -u origin {{ issue.branch_name }}
-   gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>"
+   gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>\n\nLinear: {{ issue.identifier }}"
    ```
-3. Post the PR link as a comment on the Linear issue.
+4. Post the PR link as a comment on the Linear issue.
 
 ### Phase 7: Done
 

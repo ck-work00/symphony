@@ -131,9 +131,35 @@ defmodule SymphonyElixir.Workspace do
             Logger.warning("Pool slot release failed status=#{status}: #{String.trim(output)}")
         end
       end
+    else
+      # Fallback: scan slot directories for locks referencing this workspace
+      release_orphaned_locks(workspace)
     end
 
     :ok
+  end
+
+  defp release_orphaned_locks(workspace) do
+    expanded = Path.expand(workspace)
+    gearflow_dir = Path.expand("~/Documents/Gearflow")
+
+    for repo <- ["platform", "procurement"],
+        slot <- 5..8 do
+      lock_path = Path.join([gearflow_dir, "#{repo}-#{slot}", ".symphony.lock"])
+
+      if File.exists?(lock_path) do
+        case File.read(lock_path) do
+          {:ok, content} ->
+            if String.contains?(content, "workspace=#{expanded}") do
+              Logger.info("Removing orphaned lock #{lock_path} (workspace=#{expanded})")
+              File.rm(lock_path)
+            end
+
+          _ ->
+            :ok
+        end
+      end
+    end
   end
 
   @spec release_pool_slot_for_issue(String.t()) :: :ok
@@ -278,15 +304,18 @@ defmodule SymphonyElixir.Workspace do
     {:error, {:workspace_hook_failed, hook_name, status, output}}
   end
 
-  defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do
+  defp sanitize_hook_output_for_log(output, max_bytes \\ 4_096) do
     binary_output = IO.iodata_to_binary(output)
+    size = byte_size(binary_output)
 
-    case byte_size(binary_output) <= max_bytes do
+    case size <= max_bytes do
       true ->
         binary_output
 
       false ->
-        binary_part(binary_output, 0, max_bytes) <> "... (truncated)"
+        # Show the tail — the actual error is always at the end
+        "... (#{size} bytes, showing last #{max_bytes})\n" <>
+          binary_part(binary_output, size - max_bytes, max_bytes)
     end
   end
 

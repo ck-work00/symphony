@@ -1342,27 +1342,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp do_force_dispatch(state, %Issue{} = issue) do
-    Logger.info("Manual force dispatch: #{issue_context(issue)}")
-
-    # Release any lingering pool slot so the fresh dispatch can claim one
-    Task.start(fn -> Workspace.release_pool_slot_for_issue(issue.identifier) end)
-
-    # Clear all run history so the PhaseJudge doesn't block dispatch
-    History.delete_all_runs(issue.identifier)
-
-    # Clear in-memory tracking so should_dispatch_issue? passes
-    state = %{
-      state
-      | completed: MapSet.delete(state.completed, issue.id),
-        claimed: MapSet.delete(state.claimed, issue.id)
-    }
-
-    state = dispatch_issue(state, issue)
-    notify_dashboard()
-    state
-  end
-
   def handle_call({:cancel_retry, issue_id}, _from, state) do
     case Map.get(state.retry_attempts, issue_id) do
       nil ->
@@ -1382,6 +1361,27 @@ defmodule SymphonyElixir.Orchestrator do
         notify_dashboard()
         {:reply, :ok, state}
     end
+  end
+
+  defp do_force_dispatch(state, %Issue{} = issue) do
+    Logger.info("Manual force dispatch: #{issue_context(issue)}")
+
+    # Release any lingering pool slot so the fresh dispatch can claim one
+    Task.start(fn -> Workspace.release_pool_slot_for_issue(issue.identifier) end)
+
+    # Clear all run history so the PhaseJudge doesn't block dispatch
+    History.delete_all_runs(issue.identifier)
+
+    # Clear in-memory tracking so should_dispatch_issue? passes
+    state = %{
+      state
+      | completed: MapSet.delete(state.completed, issue.id),
+        claimed: MapSet.delete(state.claimed, issue.id)
+    }
+
+    state = dispatch_issue(state, issue)
+    notify_dashboard()
+    state
   end
 
   defp integrate_codex_update(running_entry, %{event: event, timestamp: timestamp} = update) do

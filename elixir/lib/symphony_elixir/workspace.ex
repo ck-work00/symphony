@@ -118,7 +118,7 @@ defmodule SymphonyElixir.Workspace do
     slot_file = Path.join(workspace, ".symphony_slot")
 
     if File.exists?(slot_file) do
-      release_script = Path.expand("~/.claude/scripts/symphony-slot-release.sh")
+      release_script = scripts_path("slot-release.sh")
 
       if File.exists?(release_script) do
         Logger.info("Releasing pool slot for workspace=#{workspace}")
@@ -427,7 +427,10 @@ defmodule SymphonyElixir.Workspace do
         true -> ""
       end
 
-    Map.put(env, "SYMPHONY_REPO", repo)
+    env
+    |> Map.put("SYMPHONY_REPO", repo)
+    |> Map.put("SYMPHONY_ROOT", Application.app_dir(:symphony_elixir))
+    |> Map.put("SYMPHONY_SCRIPTS", scripts_path("") <> "/")
     |> Map.to_list()
   end
 
@@ -438,5 +441,10 @@ defmodule SymphonyElixir.Workspace do
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"
+  end
+
+  @doc false
+  def scripts_path(script_name) do
+    Application.app_dir(:symphony_elixir, Path.join("priv/scripts", script_name))
   end
 end

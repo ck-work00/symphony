@@ -53,7 +53,7 @@ Upload each screenshot and collect the asset URLs:
 ```bash
 URLS=""
 for img in /tmp/evidence-*.png; do
-  URL=$(~/.claude/scripts/linear-upload-image.sh "$img")
+  URL=$("${SYMPHONY_SCRIPTS}linear-upload-image.sh" "$img")
   URLS="$URLS\n![$(basename "$img" .png)]($URL)"
 done
 ```

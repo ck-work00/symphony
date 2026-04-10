@@ -26,9 +26,9 @@ hooks:
   timeout_ms: 300000
   before_run: |
     BRANCH="${SYMPHONY_BRANCH_NAME:-$(echo "$(basename "$PWD")" | tr '[:upper:]' '[:lower:]')}"
-    ~/.claude/scripts/symphony-slot-claim.sh procurement "$BRANCH" "$PWD"
+    "${SYMPHONY_SCRIPTS}slot-claim.sh" "${SYMPHONY_REPO:-procurement}" "$BRANCH" "$PWD"
   before_remove: |
-    ~/.claude/scripts/symphony-slot-release.sh "$PWD"
+    "${SYMPHONY_SCRIPTS}slot-release.sh" "$PWD"
 
 agent:
   backend: claude
@@ -142,7 +142,7 @@ Post test results — including screenshots — to the Linear issue:
 
 1. **Upload screenshots to Linear** using the helper script:
    ```bash
-   ASSET_URL=$(~/.claude/scripts/linear-upload-image.sh screenshot.png)
+   ASSET_URL=$("${SYMPHONY_SCRIPTS}linear-upload-image.sh" screenshot.png)
    ```
    This prints the permanent asset URL. Use it in comments as `![description](ASSET_URL)`.
    **IMPORTANT**: Only use the URL printed by this script. Do NOT use any signed or temporary URLs.

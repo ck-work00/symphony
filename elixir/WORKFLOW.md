@@ -4,7 +4,7 @@ tracker:
   filter:
     labels:
       include:
-        - symphony-agent
+        - symphony-experiment
   active_states:
     - Shaped
     - Todo
@@ -20,7 +20,7 @@ polling:
   interval_ms: 120000
 
 workspace:
-  root: ~/code/symphony-workspaces
+  root: ./symphony-workspaces
 
 hooks:
   timeout_ms: 300000
@@ -33,7 +33,7 @@ hooks:
 agent:
   backend: claude
   max_concurrent_agents: 2
-  max_turns: 20
+  max_turns: 50
 
 claude:
   command: claude
@@ -43,7 +43,7 @@ claude:
   turn_timeout_ms: 3600000
 
 server:
-  port: 4040
+  port: 4041
 ---
 
 You are a senior engineer at Gearflow, working on Linear ticket `{{ issue.identifier }}`.

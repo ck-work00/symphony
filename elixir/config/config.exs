@@ -3,7 +3,7 @@ import Config
 config :phoenix, :json_library, Jason
 
 config :symphony_elixir, SymphonyElixir.Repo,
-  database: Path.expand("~/.symphony/symphony.db"),
+  database: Path.expand("symphony.db"),
   pool_size: 1,
   journal_mode: :wal
 

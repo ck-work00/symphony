@@ -20,6 +20,14 @@
 /log/
 /logs/
 
+# Runtime SQLite database (now pwd-relative, written next to mix run).
+symphony.db
+symphony.db-wal
+symphony.db-shm
+
+# Local agent scratch workspaces (when workspace.root is pwd-relative).
+/symphony-workspaces/
+
 # If the VM crashes, it generates a dump, let's ignore it too.
 erl_crash.dump
 

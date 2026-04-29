@@ -777,9 +777,9 @@ defmodule SymphonyElixir.Orchestrator do
 
           case PhaseJudge.pre_dispatch_assess(refreshed_issue, pr_url) do
             :fresh ->
-              # Fresh issue — dispatch Investigate phase
+              # Fresh issue — dispatch unified Implement phase (handles investigate+build+ship)
               fresh_metadata = Map.merge(metadata, Map.merge(pr_metadata, %{
-                retask_phases: ["Investigate"],
+                retask_phases: ["Implement"],
                 completed_phases: []
               }))
               do_dispatch_issue(state, refreshed_issue, attempt, fresh_metadata)

@@ -8,6 +8,37 @@ You are assigned ONLY to `{{ issue.identifier }}`. Do not work on any other issu
 Do not look for additional work, do not tackle related issues, do not expand scope.
 Do only what the phase instructions below tell you to do — nothing more.
 
+## Process docs in the repo are normative
+
+Before doing anything else, look for an area-specific process directory under the working repo's `docs/`. Examples: `docs/lv-migration/`, `docs/<area>/`. The issue body usually points to one if it applies. If you find one, read **every file** in that directory in full before writing code. In particular:
+
+- A `README.md` (process overview + Definition of Done) — follow its workflow.
+- A `WORKER_PROMPT.md` (or equivalent) — treat it as a stricter version of these instructions and obey it.
+- A `PAGE_CONTRACT.md` (or `*_CONTRACT.md`, or any fillable template) — this is the contract you must fill and implement against.
+- A `FAILURE_MODES.md` — these are forbidden patterns; do not repeat them.
+- A `TESTER_PROMPT.md` — this is what the tester will check. Self-verify against it before declaring done.
+
+Repo process docs override the generic guidance below where they conflict — they were written by humans who understand this codebase.
+
+## The Contract is the contract
+
+The "Contract" is the structured artifact that defines what "done" means for this issue. It comes from one of these, in priority order:
+
+1. A filled `PAGE_CONTRACT.md` (or `*_CONTRACT.md`) posted on the Linear issue or committed to the WIP branch. This is the canonical contract — every row is a deliverable.
+2. The issue body's `## Requirements`, `## Acceptance Criteria`, or equivalent checklist. Each item is a deliverable.
+3. Concrete requirements stated as prose in the issue body. Extract them into a checklist before starting.
+
+You are responsible for closing **every** Contract row. Specifically:
+
+- Re-read the issue body, the filled Contract (if posted), and any in-repo design notes (`WORKPAD.md`, `DESIGN.md`, `{issue-id}.md`) at the start of the run AND again before declaring done.
+- Track row status with three states: `✅ implemented` / `⚠ partial` / `❌ missing`. Binary checkboxes hide partial work.
+- You may **NOT** unilaterally defer Contract rows to a follow-up. "Out of scope" is a reviewer decision recorded in writing on Linear or in a PR comment, never a worker decision. If a row feels too big, that's a signal it's the right work — not a signal to skip it. The only acceptable exits without implementing a row are: (a) the Contract has marked it Out-of-scope with a reviewer signoff link, or (b) implementation is genuinely blocked on missing backend, missing data, or missing design — in which case stop and emit `SYMPHONY_NEEDS_HELP` rather than silently deferring.
+- Do **NOT** end the turn with open questions for the human unless you are genuinely blocked. If a row is ambiguous, choose the most reasonable interpretation, document the assumption in the PR description, and continue.
+
+The orchestrator will dispatch you again on the next polling cycle if rows remain open. Each dispatch is a fresh Claude session — make your work durable by committing the audit (`WORKPAD.md`) and posting status to Linear.
+
+The agent harness will not babysit you between phases — there is no separate "investigate" run that hands off to "implement." You own the work end-to-end within this dispatch.
+
 ## CRITICAL: Working Directory
 
 Your current directory is a Symphony scratch workspace — do NOT work here.

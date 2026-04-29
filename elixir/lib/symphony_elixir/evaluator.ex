@@ -30,6 +30,7 @@ defmodule SymphonyElixir.Evaluator do
           evidence_posted: boolean(),
           workpad_updated: boolean(),
           tests_written: boolean(),
+          tester_approved: boolean(),
           plan_posted: boolean(),
           simplify_done: boolean(),
           score: integer()
@@ -65,6 +66,7 @@ defmodule SymphonyElixir.Evaluator do
     pushed = check_branch_pushed(workspace_path, branch)
     {evidence, workpad} = check_linear_comments(issue_id)
     tests = check_tests_written(workspace_path)
+    tester = check_tester_approved(issue_id)
     plan = check_plan_posted(issue_id)
     simplify = check_simplify_done(workspace_path, issue_id)
 
@@ -78,6 +80,7 @@ defmodule SymphonyElixir.Evaluator do
       evidence_posted: evidence,
       workpad_updated: workpad,
       tests_written: tests,
+      tester_approved: tester,
       plan_posted: plan,
       simplify_done: simplify,
       score: 0
@@ -280,6 +283,22 @@ defmodule SymphonyElixir.Evaluator do
           String.contains?(all_text, "- [ ]") or
           String.contains?(all_text, "## Implementation") or
           String.contains?(all_text, "### Plan")
+
+      _ ->
+        false
+    end
+  end
+
+  defp check_tester_approved(nil), do: false
+
+  defp check_tester_approved(issue_id) do
+    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
+      {:ok, comments} ->
+        all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
+
+        String.contains?(all_text, "## Tester Report") and
+          (String.contains?(all_text, "Recommendation: APPROVE") or
+             String.contains?(all_text, "**Recommendation:** APPROVE"))
 
       _ ->
         false

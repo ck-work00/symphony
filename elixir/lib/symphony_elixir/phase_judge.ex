@@ -13,7 +13,7 @@ defmodule SymphonyElixir.PhaseJudge do
 
   alias SymphonyElixir.History
 
-  @phases_in_order ["Investigate", "Implement", "Share Evidence", "Simplify"]
+  @phases_in_order ["Implement", "Test", "Share Evidence", "Simplify"]
 
   # Maximum total runs per issue before we stop retrying.
   @max_runs_per_issue 12
@@ -74,7 +74,7 @@ defmodule SymphonyElixir.PhaseJudge do
       # Add phases implied by external signals
       from_external =
         []
-        |> then(fn p -> if pr_url != nil, do: ["Investigate", "Implement"] ++ p, else: p end)
+        |> then(fn p -> if pr_url != nil, do: ["Implement"] ++ p, else: p end)
         |> then(fn p -> if summary.has_evidence, do: ["Share Evidence"] ++ p, else: p end)
 
       # Run live evidence check for phases that can't be determined from history alone
@@ -165,18 +165,16 @@ defmodule SymphonyElixir.PhaseJudge do
   defp phases_from_evidence(eval) do
     phases = []
 
-    # Investigate: plan posted to Linear
-    phases = if eval[:plan_posted], do: ["Investigate" | phases], else: phases
-
-    # Implement: PR created with files changed and tests written
+    # Implement: PR created with files changed
     phases =
       if eval[:pr_created] and eval[:files_changed] > 0 do
-        p = ["Implement" | phases]
-        # If there's also a plan, investigate is done too
-        if eval[:plan_posted], do: p, else: ["Investigate" | p]
+        ["Implement" | phases]
       else
         phases
       end
+
+    # Test: tester sub-agent posted an APPROVE Tester Report
+    phases = if eval[:tester_approved], do: ["Test" | phases], else: phases
 
     # Share Evidence: Linear comment with screenshots/evidence posted
     phases = if eval[:evidence_posted], do: ["Share Evidence" | phases], else: phases
@@ -194,6 +192,7 @@ defmodule SymphonyElixir.PhaseJudge do
       files_changed: eval[:files_changed] || 0,
       pr_created: eval[:pr_created] || false,
       tests_written: eval[:tests_written] || false,
+      tester_approved: eval[:tester_approved] || false,
       evidence_posted: eval[:evidence_posted] || false,
       plan_posted: eval[:plan_posted] || false,
       simplify_done: eval[:simplify_done] || false,
@@ -210,16 +209,12 @@ defmodule SymphonyElixir.PhaseJudge do
 
     event_types = summary.events |> Enum.map(& &1.event_type) |> MapSet.new()
 
-    # PR or first edit implies Investigate + Implement done
+    # PR existence implies Implement done
     phases =
       if MapSet.member?(event_types, "milestone_pr_created") or summary.has_pr do
-        ["Investigate", "Implement" | phases]
+        ["Implement" | phases]
       else
-        if MapSet.member?(event_types, "milestone_first_edit") do
-          ["Investigate" | phases]
-        else
-          phases
-        end
+        phases
       end
 
     # Evidence in Linear
@@ -286,7 +281,7 @@ defmodule SymphonyElixir.PhaseJudge do
         _ -> phases
       end
 
-    # Plan posted: check Linear for requirements comment
+    # Test + Share Evidence: check Linear for tester report and audit/test-results comments
     issue_id = Map.get(issue, :id)
 
     phases =
@@ -296,8 +291,13 @@ defmodule SymphonyElixir.PhaseJudge do
             all_text = comments |> Enum.map(& &1.body) |> Enum.join("\n")
 
             p = phases
-            p = if String.contains?(all_text, "## Requirements") or String.contains?(all_text, "- [ ]"), do: ["Investigate" | p], else: p
-            p = if String.contains?(all_text, "## Test Results"), do: ["Share Evidence" | p], else: p
+            p = if tester_approved?(all_text), do: ["Test" | p], else: p
+            p =
+              if String.contains?(all_text, "## Test Results") or
+                   String.contains?(all_text, "## Contract Audit"),
+                 do: ["Share Evidence" | p],
+                 else: p
+
             p
 
           _ -> phases
@@ -307,5 +307,13 @@ defmodule SymphonyElixir.PhaseJudge do
       end
 
     Enum.uniq(phases)
+  end
+
+  # A Tester Report counts as APPROVE only if it explicitly says so.
+  # REQUEST_CHANGES / BLOCKED leaves the Test phase open so the orchestrator re-dispatches.
+  defp tester_approved?(text) do
+    String.contains?(text, "## Tester Report") and
+      (String.contains?(text, "Recommendation: APPROVE") or
+         String.contains?(text, "**Recommendation:** APPROVE"))
   end
 end

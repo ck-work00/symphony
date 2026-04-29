@@ -11,6 +11,10 @@ POOL_PREFIX="${1:?Usage: slot-claim.sh <platform|procurement> <branch> <workspac
 BRANCH="${2:?Usage: slot-claim.sh <platform|procurement> <branch> <workspace>}"
 WORKSPACE="${3:?Usage: slot-claim.sh <platform|procurement> <branch> <workspace>}"
 
+# Base branch for stacked-diff workflows (e.g. wave branches). Defaults to main.
+# The orchestrator can set SYMPHONY_BASE_BRANCH from the issue body before invoking this script.
+BASE_BRANCH="${SYMPHONY_BASE_BRANCH:-main}"
+
 if [[ "$POOL_PREFIX" != "platform" && "$POOL_PREFIX" != "procurement" ]]; then
   echo "ERROR: repo must be 'platform' or 'procurement', got '$POOL_PREFIX'"
   exit 1
@@ -146,14 +150,21 @@ echo "workspace=$WORKSPACE branch=$BRANCH claimed_at=$(date -u +%Y-%m-%dT%H:%M:%
 
 # Checkout branch
 git fetch origin --quiet
-git checkout main --quiet
-git reset --hard origin/main --quiet
+# If BASE_BRANCH != main, fetch it explicitly so origin/$BASE_BRANCH exists locally
+if [ "$BASE_BRANCH" != "main" ]; then
+  git fetch origin "$BASE_BRANCH" --quiet 2>/dev/null || {
+    echo "WARNING: BASE_BRANCH=$BASE_BRANCH not found on origin; falling back to main"
+    BASE_BRANCH="main"
+  }
+fi
+git checkout "$BASE_BRANCH" --quiet 2>/dev/null || git checkout -b "$BASE_BRANCH" "origin/$BASE_BRANCH" --quiet
+git reset --hard "origin/$BASE_BRANCH" --quiet
 # Delete local branch if it exists (we always want a fresh start from origin or new)
 git branch -D "$BRANCH" 2>/dev/null || true
 if git ls-remote --heads origin "$BRANCH" 2>/dev/null | grep -q "$BRANCH"; then
   git checkout -b "$BRANCH" "origin/$BRANCH" --quiet
-  # Rebase onto latest main to pick up merged changes
-  git rebase origin/main --quiet 2>/dev/null || git rebase --abort 2>/dev/null
+  # Rebase onto latest base branch to pick up merged changes
+  git rebase "origin/$BASE_BRANCH" --quiet 2>/dev/null || git rebase --abort 2>/dev/null
 else
   git checkout -b "$BRANCH" --quiet
 fi
@@ -194,6 +205,7 @@ cat > "$WORKSPACE/.symphony_slot" <<EOF
 SLOT_NAME=$SLOT_NAME
 DIRECTORY=$DIR
 BRANCH=$BRANCH
+BASE_BRANCH=$BASE_BRANCH
 PHOENIX_PORT=$PHOENIX_PORT
 FRONTEND_PORT=$FRONTEND_PORT
 POSTGRES_PORT=$POSTGRES_PORT

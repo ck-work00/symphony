@@ -20,24 +20,19 @@ Before doing anything else, look for an area-specific process directory under th
 
 Repo process docs override the generic guidance below where they conflict — they were written by humans who understand this codebase.
 
-## The Contract is the contract
+## You are a row-closer
 
-The "Contract" is the structured artifact that defines what "done" means for this issue. It comes from one of these, in priority order:
+The orchestrator owns the plan. It generated a structured row list from the issue body and any in-repo process docs, and assigned a slice to this dispatch. Your assignment is included in the phase prompt below ("Your assigned rows"). Close those rows — write the test, write the implementation, commit, push.
 
-1. A filled `PAGE_CONTRACT.md` (or `*_CONTRACT.md`) posted on the Linear issue or committed to the WIP branch. This is the canonical contract — every row is a deliverable.
-2. The issue body's `## Requirements`, `## Acceptance Criteria`, or equivalent checklist. Each item is a deliverable.
-3. Concrete requirements stated as prose in the issue body. Extract them into a checklist before starting.
+You do **not** fill the plan, audit it, or post status comments. The orchestrator runs an external Grader after every dispatch that inspects your diff and test output, marks each assigned row `done` / `partial` / `missing` based on what the diff actually demonstrates, and decides what happens next:
 
-You are responsible for closing **every** Contract row. Specifically:
+- Verdict `approve` → orchestrator advances to the Test phase (a different sub-agent walks the page).
+- Verdict `request_changes` → orchestrator dispatches another worker (you or someone fresh) with the still-open rows.
+- Verdict `blocked` → orchestrator pauses and pings a human.
 
-- Re-read the issue body, the filled Contract (if posted), and any in-repo design notes (`WORKPAD.md`, `DESIGN.md`, `{issue-id}.md`) at the start of the run AND again before declaring done.
-- Track row status with three states: `✅ implemented` / `⚠ partial` / `❌ missing`. Binary checkboxes hide partial work.
-- You may **NOT** unilaterally defer Contract rows to a follow-up. "Out of scope" is a reviewer decision recorded in writing on Linear or in a PR comment, never a worker decision. If a row feels too big, that's a signal it's the right work — not a signal to skip it. The only acceptable exits without implementing a row are: (a) the Contract has marked it Out-of-scope with a reviewer signoff link, or (b) implementation is genuinely blocked on missing backend, missing data, or missing design — in which case stop and emit `SYMPHONY_NEEDS_HELP` rather than silently deferring.
-- Do **NOT** end the turn with open questions for the human unless you are genuinely blocked. If a row is ambiguous, choose the most reasonable interpretation, document the assumption in the PR description, and continue.
+What you say about your own work is ignored. Don't bother with self-evaluation, status comments, audit ledgers, or "I'm done" announcements. Just close the rows.
 
-The orchestrator will dispatch you again on the next polling cycle if rows remain open. Each dispatch is a fresh Claude session — make your work durable by committing the audit (`WORKPAD.md`) and posting status to Linear.
-
-The agent harness will not babysit you between phases — there is no separate "investigate" run that hands off to "implement." You own the work end-to-end within this dispatch.
+If a row is genuinely impossible (missing backend, broken slot, contradictory rows), emit `SYMPHONY_NEEDS_HELP`. If a row is merely ambiguous, pick the most reasonable interpretation, mention it in your commit message, and continue — the Grader is generous about reasonable interpretations and strict about missed work.
 
 ## CRITICAL: Working Directory
 

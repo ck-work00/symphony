@@ -150,6 +150,12 @@ defmodule SymphonyElixir.Orchestrator do
             :normal ->
               continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
 
+              # If this dispatch was plan-driven, grade its diff before letting
+              # PhaseJudge make the next-phase decision. Grader updates the
+              # plan rows in SQLite; the next dispatch's `next_action` will
+              # see refreshed open-row state.
+              maybe_grade_plan_dispatch(running_entry)
+
               case PhaseJudge.assess(running_entry, eval_result) do
                 :done ->
                   score = if eval_result, do: Map.get(eval_result, :score), else: nil
@@ -758,6 +764,149 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
+  # If this dispatch is for the Implement phase, hand off to the Planning
+  # workflow: generate the plan if missing, pull the next batch of open rows,
+  # record a Dispatch row, and stuff the rows + dispatch id into metadata so
+  # the agent_runner can pass them to the worker prompt.
+  #
+  # For Test / Share Evidence / Simplify dispatches, leave metadata alone —
+  # those phases still go through the older PhaseJudge flow.
+  defp maybe_attach_plan_assignment(issue, metadata) do
+    case metadata[:retask_phases] do
+      ["Implement"] -> attach_plan_assignment(issue, metadata)
+      _ -> metadata
+    end
+  end
+
+  # After a plan-driven worker dispatch finishes, grade its diff against the
+  # rows it was assigned. Updates the plan in SQLite; the verdict isn't used
+  # to drive the next dispatch decision directly — PhaseJudge still does that
+  # — but the updated row states feed into the NEXT call to
+  # `Workflow.next_action` so re-dispatches get a refreshed assignment.
+  defp maybe_grade_plan_dispatch(running_entry) do
+    case running_entry[:plan_dispatch_id] do
+      nil ->
+        :ok
+
+      dispatch_id when is_binary(dispatch_id) ->
+        with %SymphonyElixir.Planning.Dispatch{} = dispatch <-
+               SymphonyElixir.Repo.get(SymphonyElixir.Planning.Dispatch, dispatch_id),
+             %SymphonyElixir.Planning.Plan{} = plan <-
+               SymphonyElixir.Repo.get(SymphonyElixir.Planning.Plan, dispatch.plan_id),
+             {:ok, diff} <- fetch_dispatch_diff(running_entry) do
+          case SymphonyElixir.Planning.Workflow.grade_dispatch(dispatch,
+                 plan: plan,
+                 diff: diff,
+                 test_output: ""
+               ) do
+            {:ok, {verdict, _updated_plan}} ->
+              Logger.info(
+                "Grader verdict for plan dispatch=#{dispatch_id} verdict=#{verdict} issue=#{running_entry[:identifier]}"
+              )
+
+              :ok
+
+            {:error, reason} ->
+              Logger.warning(
+                "Grader failed for plan dispatch=#{dispatch_id} reason=#{inspect(reason)}"
+              )
+
+              :ok
+          end
+        else
+          nil ->
+            Logger.warning("Grader skipped: plan dispatch=#{dispatch_id} not found")
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("Grader skipped: #{inspect(reason)}")
+            :ok
+        end
+    end
+  rescue
+    error ->
+      Logger.error("maybe_grade_plan_dispatch crashed: #{Exception.message(error)}")
+      :ok
+  end
+
+  # Read the working-directory diff from the slot so the Grader has evidence.
+  # Falls back to an empty diff if anything goes wrong — the Grader will then
+  # see "no changes" and mark every assigned row missing, which is the right
+  # answer for a dispatch that failed to push code.
+  defp fetch_dispatch_diff(running_entry) do
+    workspace_path =
+      with identifier when is_binary(identifier) <- running_entry[:identifier],
+           workspace = Path.join(SymphonyElixir.Config.workspace_root(), identifier),
+           slot_file = Path.join(workspace, ".symphony_slot"),
+           {:ok, content} <- File.read(slot_file),
+           [_, dir] <- Regex.run(~r/DIRECTORY=(.+)/, content) do
+        dir |> String.trim()
+      else
+        _ -> nil
+      end
+
+    if workspace_path && File.dir?(workspace_path) do
+      base = read_base_branch(workspace_path)
+      cmd = "git fetch origin #{base} >/dev/null 2>&1; git diff origin/#{base}..HEAD"
+
+      case System.cmd("sh", ["-c", cmd], cd: workspace_path, stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {_, _} -> {:ok, ""}
+      end
+    else
+      {:ok, ""}
+    end
+  end
+
+  defp read_base_branch(workspace_path) do
+    slot_file = Path.join(workspace_path, ".env.symphony")
+
+    case File.read(slot_file) do
+      {:ok, content} ->
+        case Regex.run(~r/BASE_BRANCH=(\S+)/, content) do
+          [_, base] -> String.trim(base)
+          _ -> "main"
+        end
+
+      _ ->
+        "main"
+    end
+  end
+
+  defp attach_plan_assignment(issue, metadata) do
+    case SymphonyElixir.Planning.Workflow.next_action(issue) do
+      {:ok, {:dispatch, %{plan: plan, dispatch: dispatch, rows: rows}}} ->
+        metadata
+        |> Map.put(:assigned_rows, rows)
+        |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
+        |> Map.put(:plan_dispatch_id, dispatch.id)
+
+      {:ok, {:no_open_rows, plan}} ->
+        Logger.info("Plan has no open rows for #{issue.identifier}; dispatching anyway with empty assignment so the worker can verify state")
+        metadata
+        |> Map.put(:assigned_rows, [])
+        |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
+
+      {:ok, :done} ->
+        Logger.info("Plan already done for #{issue.identifier}; no rows to assign")
+        metadata
+
+      {:error, reason} ->
+        Logger.warning(
+          "Planner failed for #{issue.identifier}: #{inspect(reason)}; dispatching without an assignment"
+        )
+
+        metadata
+    end
+  rescue
+    error ->
+      Logger.error(
+        "attach_plan_assignment crashed for #{issue.identifier}: #{Exception.message(error)}"
+      )
+
+      metadata
+  end
+
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
@@ -831,13 +980,20 @@ defmodule SymphonyElixir.Orchestrator do
 
     runner = Config.agent_runner_module()
 
+    # For Implement dispatches, ask the Planning workflow for an assignment.
+    # Generates the plan if one doesn't exist; returns the open rows to close.
+    metadata = maybe_attach_plan_assignment(issue, metadata)
+
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            runner.run(issue, recipient,
              attempt: attempt,
              retask_phases: metadata[:retask_phases],
              completed_phases: metadata[:completed_phases],
              existing_pr_url: metadata[:existing_pr_url],
-             existing_pr_branch: metadata[:existing_pr_branch]
+             existing_pr_branch: metadata[:existing_pr_branch],
+             assigned_rows: metadata[:assigned_rows],
+             plan_rows: metadata[:plan_rows],
+             plan_dispatch_id: metadata[:plan_dispatch_id]
            )
          end) do
       {:ok, pid} ->
@@ -889,7 +1045,8 @@ defmodule SymphonyElixir.Orchestrator do
             phase_changed_at: now,
             phases_seen: [],
             screenshot_urls: [],
-            history_run_id: history_run_id
+            history_run_id: history_run_id,
+            plan_dispatch_id: Map.get(metadata, :plan_dispatch_id)
           })
 
         %{

@@ -764,18 +764,61 @@ defmodule SymphonyElixir.Orchestrator do
     |> MapSet.new()
   end
 
-  # If this dispatch is for the Implement phase, hand off to the Planning
-  # workflow: generate the plan if missing, pull the next batch of open rows,
-  # record a Dispatch row, and stuff the rows + dispatch id into metadata so
-  # the agent_runner can pass them to the worker prompt.
+  # The Plan is the authority on Implement-phase state — not PhaseJudge's
+  # "PR exists = Implement done" heuristic. Before EVERY dispatch (regardless
+  # of which phase PhaseJudge picked), assess the plan:
   #
-  # For Test / Share Evidence / Simplify dispatches, leave metadata alone —
-  # those phases still go through the older PhaseJudge flow.
+  #   * Plan has open rows → override metadata to dispatch Implement, attach
+  #     the assigned rows, create a Dispatch record. PhaseJudge's phase
+  #     decision is ignored. This is the load-bearing fix for "PR exists,
+  #     contract incomplete" issues.
+  #   * Plan complete → leave metadata alone. PhaseJudge governs Test /
+  #     Share Evidence / Simplify.
+  #   * Plan generation failed → fall back to PhaseJudge.
   defp maybe_attach_plan_assignment(issue, metadata) do
-    case metadata[:retask_phases] do
-      ["Implement"] -> attach_plan_assignment(issue, metadata)
-      _ -> metadata
+    case SymphonyElixir.Planning.Workflow.assess(issue) do
+      {:ok, {:has_open_rows, plan, rows}} ->
+        case SymphonyElixir.Planning.Workflow.start_implement_dispatch(plan, rows) do
+          {:ok, dispatch} ->
+            Logger.info(
+              "Plan has #{length(rows)} open rows for #{issue.identifier}; dispatching Implement (overriding any prior phase decision)"
+            )
+
+            metadata
+            |> Map.put(:retask_phases, ["Implement"])
+            |> Map.put(:assigned_rows, rows)
+            |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
+            |> Map.put(:plan_dispatch_id, dispatch.id)
+
+          {:error, reason} ->
+            Logger.warning(
+              "Failed to record plan dispatch for #{issue.identifier}: #{inspect(reason)}; falling back to PhaseJudge"
+            )
+
+            metadata
+        end
+
+      {:ok, {:complete, _plan}} ->
+        Logger.info(
+          "Plan complete for #{issue.identifier}; deferring to PhaseJudge for next phase"
+        )
+
+        metadata
+
+      {:error, reason} ->
+        Logger.warning(
+          "Plan assess failed for #{issue.identifier}: #{inspect(reason)}; falling back to PhaseJudge"
+        )
+
+        metadata
     end
+  rescue
+    error ->
+      Logger.error(
+        "maybe_attach_plan_assignment crashed for #{issue.identifier}: #{Exception.message(error)}"
+      )
+
+      metadata
   end
 
   # After a plan-driven worker dispatch finishes, grade its diff against the
@@ -873,39 +916,6 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp attach_plan_assignment(issue, metadata) do
-    case SymphonyElixir.Planning.Workflow.next_action(issue) do
-      {:ok, {:dispatch, %{plan: plan, dispatch: dispatch, rows: rows}}} ->
-        metadata
-        |> Map.put(:assigned_rows, rows)
-        |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
-        |> Map.put(:plan_dispatch_id, dispatch.id)
-
-      {:ok, {:no_open_rows, plan}} ->
-        Logger.info("Plan has no open rows for #{issue.identifier}; dispatching anyway with empty assignment so the worker can verify state")
-        metadata
-        |> Map.put(:assigned_rows, [])
-        |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
-
-      {:ok, :done} ->
-        Logger.info("Plan already done for #{issue.identifier}; no rows to assign")
-        metadata
-
-      {:error, reason} ->
-        Logger.warning(
-          "Planner failed for #{issue.identifier}: #{inspect(reason)}; dispatching without an assignment"
-        )
-
-        metadata
-    end
-  rescue
-    error ->
-      Logger.error(
-        "attach_plan_assignment crashed for #{issue.identifier}: #{Exception.message(error)}"
-      )
-
-      metadata
-  end
 
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do

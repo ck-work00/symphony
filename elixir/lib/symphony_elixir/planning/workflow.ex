@@ -20,71 +20,56 @@ defmodule SymphonyElixir.Planning.Workflow do
   alias SymphonyElixir.Planning
   alias SymphonyElixir.Planning.{Plan, Planner, Grader, Dispatch}
 
-  @type assignment :: %{
-          plan: Plan.t(),
-          dispatch: Dispatch.t(),
-          rows: [map()]
-        }
-
-  @type next_action ::
-          :done
-          | {:plan_then_dispatch, Plan.t()}
-          | {:dispatch, assignment()}
-          | {:no_open_rows, Plan.t()}
+  @type assess_result ::
+          {:has_open_rows, Plan.t(), [map()]}
+          | {:complete, Plan.t()}
 
   @doc """
-  Decide the next action for an issue.
+  Read-only assessment of whether the plan has open rows.
 
-    * If no plan exists, return `{:plan_then_dispatch, plan}` after generating one.
-    * If the plan has open rows (`missing` or `partial`), return `{:dispatch, assignment}`.
-    * If every row is `done` or `deferred`, return `:done`.
+    * If no plan exists for the issue, generate one (single LLM call) and
+      return its open-row state.
+    * If a plan exists with `missing` or `partial` rows, return
+      `{:has_open_rows, plan, rows}`.
+    * If every row is `done` or `deferred`, return `{:complete, plan}`.
 
-  The caller (orchestrator) is responsible for actually dispatching the
-  worker once we hand back an assignment.
+  This does NOT create a `Dispatch` row — call `start_implement_dispatch/3`
+  separately when the orchestrator commits to dispatching a worker against
+  these rows.
   """
-  @spec next_action(map(), keyword()) :: {:ok, next_action()} | {:error, term()}
-  def next_action(issue, opts \\ []) do
+  @spec assess(map(), keyword()) :: {:ok, assess_result()} | {:error, term()}
+  def assess(issue, opts \\ []) do
     identifier = Map.get(issue, :identifier) || Map.get(issue, "identifier")
 
-    case Planning.get_plan_by_issue(identifier) do
-      nil ->
-        case Planner.plan(issue, opts) do
-          {:ok, plan} ->
-            decide_from_plan(plan)
+    plan_result =
+      case Planning.get_plan_by_issue(identifier) do
+        nil -> Planner.plan(issue, opts)
+        %Plan{} = plan -> {:ok, plan}
+      end
 
-          err ->
-            err
+    case plan_result do
+      {:ok, plan} ->
+        case Plan.open_rows(plan) do
+          [] -> {:ok, {:complete, plan}}
+          rows -> {:ok, {:has_open_rows, plan, rows}}
         end
 
-      %Plan{status: "done"} ->
-        {:ok, :done}
-
-      %Plan{} = plan ->
-        decide_from_plan(plan)
-    end
-  end
-
-  defp decide_from_plan(%Plan{} = plan) do
-    open = Plan.open_rows(plan)
-
-    if open == [] do
-      {:ok, {:no_open_rows, plan}}
-    else
-      case start_dispatch(plan, open) do
-        {:ok, dispatch} -> {:ok, {:dispatch, %{plan: plan, dispatch: dispatch, rows: open}}}
-        err -> err
-      end
+      err ->
+        err
     end
   end
 
   @doc """
-  Record the start of a worker dispatch and return the persisted row.
+  Record the start of a worker dispatch.
 
-  The caller passes `slot_name` once it's claimed; the dispatch is created
-  with the assigned rows and started_at timestamp.
+  Call this only after `assess/2` returned `{:has_open_rows, plan, rows}`
+  AND the orchestrator has committed to dispatching a worker. Creates a
+  `Dispatch` row with the assigned rows, ready for the Grader to find
+  later.
   """
-  @spec start_dispatch(Plan.t(), [map()], keyword()) :: {:ok, Dispatch.t()} | {:error, term()}
-  def start_dispatch(%Plan{} = plan, rows, opts \\ []) do
+  @spec start_implement_dispatch(Plan.t(), [map()], keyword()) ::
+          {:ok, Dispatch.t()} | {:error, term()}
+  def start_implement_dispatch(%Plan{} = plan, rows, opts \\ []) do
     Planning.record_dispatch(%{
       plan_id: plan.id,
       role: "implement",

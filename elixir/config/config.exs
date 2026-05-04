@@ -2,8 +2,10 @@ import Config
 
 config :phoenix, :json_library, Jason
 
+db_filename = if config_env() == :test, do: "symphony_test.db", else: "symphony.db"
+
 config :symphony_elixir, SymphonyElixir.Repo,
-  database: Path.expand("symphony.db"),
+  database: Path.expand(db_filename),
   pool_size: 1,
   journal_mode: :wal
 

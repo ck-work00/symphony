@@ -21,9 +21,10 @@
 /logs/
 
 # Runtime SQLite database (now pwd-relative, written next to mix run).
-symphony.db
-symphony.db-wal
-symphony.db-shm
+# Glob matches both the dev DB (symphony.db) and the test DB (symphony_test.db).
+symphony*.db
+symphony*.db-wal
+symphony*.db-shm
 
 # Local agent scratch workspaces (when workspace.root is pwd-relative).
 /symphony-workspaces/

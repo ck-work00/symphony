@@ -776,7 +776,9 @@ defmodule SymphonyElixir.Orchestrator do
   #     Share Evidence / Simplify.
   #   * Plan generation failed → fall back to PhaseJudge.
   defp maybe_attach_plan_assignment(issue, metadata) do
-    case SymphonyElixir.Planning.Workflow.assess(issue) do
+    assess_opts = [pr_url: metadata[:existing_pr_url]]
+
+    case SymphonyElixir.Planning.Workflow.assess(issue, assess_opts) do
       {:ok, {:has_open_rows, plan, rows}} ->
         case SymphonyElixir.Planning.Workflow.start_implement_dispatch(plan, rows) do
           {:ok, dispatch} ->

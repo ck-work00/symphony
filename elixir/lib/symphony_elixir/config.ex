@@ -41,7 +41,7 @@ defmodule SymphonyElixir.Config do
   @default_claude_dangerously_skip_permissions false
   @default_codex_turn_timeout_ms 3_600_000
   @default_codex_read_timeout_ms 5_000
-  @default_codex_stall_timeout_ms 300_000
+  @default_codex_stall_timeout_ms 1_800_000
   @default_codex_approval_policy %{
     "reject" => %{
       "sandbox_approval" => true,

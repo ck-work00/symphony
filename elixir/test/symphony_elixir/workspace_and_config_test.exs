@@ -682,7 +682,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     assert Config.codex_turn_timeout_ms() == 3_600_000
     assert Config.codex_read_timeout_ms() == 5_000
-    assert Config.codex_stall_timeout_ms() == 300_000
+    assert Config.codex_stall_timeout_ms() == 1_800_000
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_command: "codex app-server --model gpt-5.3-codex")
     assert Config.codex_command() == "codex app-server --model gpt-5.3-codex"
@@ -714,7 +714,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.codex_read_timeout_ms() == 5_000
 
     write_workflow_file!(Workflow.workflow_file_path(), codex_stall_timeout_ms: "bad")
-    assert Config.codex_stall_timeout_ms() == 300_000
+    assert Config.codex_stall_timeout_ms() == 1_800_000
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_active_states: %{todo: true},

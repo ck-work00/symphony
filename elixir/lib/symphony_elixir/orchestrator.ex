@@ -139,7 +139,13 @@ defmodule SymphonyElixir.Orchestrator do
         {state, eval_result} = record_completed_history(state, running_entry, reason)
         session_id = running_entry_session_id(running_entry)
 
-        # Release the pool slot immediately — the agent process is done.
+        # Grade the dispatch (if plan-driven) BEFORE the slot is released.
+        # The Grader needs the slot's diff intact, and slot-release.sh resets
+        # the branch via `git checkout main && git reset --hard origin/main`.
+        # Run on every reason — even failures land partial commits worth grading.
+        maybe_grade_plan_dispatch(running_entry)
+
+        # Release the pool slot — the agent process is done.
         # If the issue gets retasked/retried, the slot will be re-claimed on next dispatch.
         if identifier = running_entry[:identifier] do
           Task.start(fn -> Workspace.release_pool_slot_for_issue(identifier) end)
@@ -149,12 +155,6 @@ defmodule SymphonyElixir.Orchestrator do
           case reason do
             :normal ->
               continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
-
-              # If this dispatch was plan-driven, grade its diff before letting
-              # PhaseJudge make the next-phase decision. Grader updates the
-              # plan rows in SQLite; the next dispatch's `next_action` will
-              # see refreshed open-row state.
-              maybe_grade_plan_dispatch(running_entry)
 
               case PhaseJudge.assess(running_entry, eval_result) do
                 :done ->
@@ -492,6 +492,13 @@ defmodule SymphonyElixir.Orchestrator do
 
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
+
+        # Finalize the run row + grade partial work BEFORE demonitoring.
+        # Without this, stalls / forced terminations leave runs.outcome NULL
+        # because Process.demonitor(ref, [:flush]) eats the natural DOWN that
+        # would otherwise have triggered record_completed_history.
+        {state, _eval} = record_completed_history(state, running_entry, {:terminated, :stalled_or_forced})
+        maybe_grade_plan_dispatch(running_entry)
 
         if cleanup_workspace do
           cleanup_issue_workspace(identifier)

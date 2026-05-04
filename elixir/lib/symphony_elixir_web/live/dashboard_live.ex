@@ -412,7 +412,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       <pre class="error-full"><%= entry.error %></pre>
                       <%= if entry[:last_message] do %>
                         <p class="error-context-label">Last activity:</p>
-                        <pre class="error-full"><%= entry.last_message %></pre>
+                        <pre class="error-full"><%= format_last_message(entry.last_message) %></pre>
                       <% end %>
                     <% else %>
                       <span class="muted">—</span>
@@ -715,6 +715,13 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   defp phase_step_class(_step, _current_phase), do: "phase-step"
+
+  # last_message can be a string (most events) or a Map (tool_result events
+  # with structured payloads). Phoenix.HTML.Safe is undefined for Map, so
+  # interpolating directly crashes the LiveView. Stringify safely.
+  defp format_last_message(msg) when is_binary(msg), do: msg
+  defp format_last_message(nil), do: ""
+  defp format_last_message(other), do: inspect(other, pretty: true, limit: :infinity)
 
   defp timeline_dot_class("phase_change"), do: "timeline-dot-phase"
   defp timeline_dot_class("milestone_" <> _), do: "timeline-dot-milestone"

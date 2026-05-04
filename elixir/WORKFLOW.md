@@ -39,7 +39,7 @@ claude:
   command: claude
   dangerously_skip_permissions: true
   max_turns: 0
-  stall_timeout_ms: 600000
+  stall_timeout_ms: 1800000
   turn_timeout_ms: 3600000
 
 server:

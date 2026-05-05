@@ -33,11 +33,13 @@ defmodule SymphonyElixir.Planning.Grader do
   @grade_system_prompt """
   You are the grading component of an autonomous engineering orchestrator.
 
-  Given a plan, the rows a worker was assigned, and the resulting diff and
-  test output, evaluate which rows the diff actually closes. Workers
-  routinely overstate their progress; only count a row as `done` if the
-  diff demonstrably covers it AND a test (or the diff itself for non-code
-  artifacts) verifies it.
+  Given a plan, the rows a worker was assigned, and a structured summary of
+  the branch state (file list, line counts, commit subjects) plus optional
+  test output, evaluate which rows are closed. Workers routinely overstate
+  their progress, so be skeptical — but also know that `touches:` paths in
+  the plan rows are GUESSES from the Planner that may not match the
+  codebase's actual layout. Match by intent and filename pattern, not
+  literal-string equality.
 
   Hard requirements:
 
@@ -51,7 +53,7 @@ defmodule SymphonyElixir.Planning.Grader do
            {
              "id": "R1",
              "state": "done" | "partial" | "missing",
-             "note": "specific evidence: file:line, test name, or what's still missing"
+             "note": "specific evidence: file path or commit SHA from the summary, or what's still missing"
            }
          ]
        }
@@ -62,9 +64,24 @@ defmodule SymphonyElixir.Planning.Grader do
        - "request_changes": at least one row is "partial" or "missing"
        - "blocked": the dispatch couldn't run at all (slot broken, tests
          crash on unrelated code, missing infrastructure). Use sparingly.
-  5. `note` fields must cite specific evidence. "Looks good" is not a note;
-     "lib/x.ex:42 implements the filter, test/x_test.exs:88 covers it" is.
-  6. If a row's diff exists but its test is missing, that row is `partial`,
+  5. `note` fields must cite specific evidence from the summary — the file
+     name with stat line, or a commit SHA + subject. "Looks good" is not a
+     note; "lib/gf_web/live/maintenance_view_live.ex (+1234 lines), commit
+     ee303e2f 'C03 inline editors'" is.
+  6. **Path matching is fuzzy.** A row that says
+     `touches: ["assets/js/hooks/local_storage_state.ts"]` may correspond
+     to an actual file at `assets/js/hooks/local_storage_draft.js` — same
+     concept, different name. If the diff has a file whose path
+     reasonably maps to the row's intent (matching basename pattern, same
+     module/namespace, same described feature in the row description),
+     count it as covering the row. Don't mark a row "missing" just because
+     the literal path string isn't in the diff.
+  7. **Commit subjects are first-class evidence.** A commit subject like
+     `GEA-2772: C03-maintenance-view — inline editors` directly closes
+     row `C03-maintenance-view`. Use commit subjects to confirm row
+     closures even when files don't precisely match the row's `touches:`
+     hints.
+  8. If a row's diff exists but its test is missing, that row is `partial`,
      not `done`. The contract is "implementation + test", not "implementation
      alone".
   """
@@ -112,7 +129,7 @@ defmodule SymphonyElixir.Planning.Grader do
     sections = [
       "## Plan (full context)\n\n```json\n#{Jason.encode!(plan_rows, pretty: true)}\n```",
       "## Rows assigned to this dispatch\n\n```json\n#{Jason.encode!(assigned, pretty: true)}\n```",
-      "## Diff\n\n```\n#{truncate(diff, 60_000)}\n```",
+      "## Branch state vs base\n\nThis is a structured summary (file list + commit subjects + diff stats), NOT a full diff dump. Match `assigned_rows[*].touches` paths against the file list, and match row IDs / contract numbers against commit subjects.\n\n```\n#{truncate(diff, 200_000)}\n```",
       "## Test output\n\n```\n#{truncate(test_output, 20_000)}\n```",
       if(notes != "", do: "## Additional context\n\n#{notes}", else: nil)
     ]

@@ -899,7 +899,25 @@ defmodule SymphonyElixir.Orchestrator do
 
     if workspace_path && File.dir?(workspace_path) do
       base = read_base_branch(workspace_path)
-      cmd = "git fetch origin #{base} >/dev/null 2>&1; git diff origin/#{base}..HEAD"
+
+      # Don't dump the full diff text — for branches with hundreds of commits
+      # it dwarfs the LLM's context and gets truncated, hiding the very files
+      # the Grader is trying to verify. Give a structured summary instead:
+      # file list + line counts + commit subjects. The Grader can match
+      # files against row.touches and commit subjects against row.id from
+      # this without seeing every changed line.
+      cmd = """
+      git fetch origin #{base} >/dev/null 2>&1
+      echo "=== diff base: origin/#{base} ==="
+      echo "=== files changed (git diff --stat) ==="
+      git diff --stat "origin/#{base}..HEAD"
+      echo
+      echo "=== commits on branch (git log --oneline) ==="
+      git log --oneline "origin/#{base}..HEAD" | head -200
+      echo
+      echo "=== file list with status (git diff --name-status) ==="
+      git diff --name-status "origin/#{base}..HEAD"
+      """
 
       case System.cmd("sh", ["-c", cmd], cd: workspace_path, stderr_to_stdout: true) do
         {output, 0} -> {:ok, output}
@@ -911,7 +929,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp read_base_branch(workspace_path) do
-    slot_file = Path.join(workspace_path, ".env.symphony")
+    # BASE_BRANCH lives in .symphony_slot (written by slot-claim.sh), NOT
+    # .env.symphony (which only has port assignments). The earlier code read
+    # the wrong file, which always fell through to "main" — the Grader then
+    # diffed stacked-branch issues against main instead of their wave base
+    # and got a noisy 40K-line diff that hid the actual delta.
+    slot_file = Path.join(workspace_path, ".symphony_slot")
 
     case File.read(slot_file) do
       {:ok, content} ->

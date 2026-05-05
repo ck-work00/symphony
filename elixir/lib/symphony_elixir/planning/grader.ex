@@ -81,7 +81,18 @@ defmodule SymphonyElixir.Planning.Grader do
      row `C03-maintenance-view`. Use commit subjects to confirm row
      closures even when files don't precisely match the row's `touches:`
      hints.
-  8. If a row's diff exists but its test is missing, that row is `partial`,
+  8. **PR description is a separate evidence channel.** A row whose
+     deliverable is a PR-body update (e.g. "Update PR description with
+     per-contract status table", "Add Contract Audit section to PR
+     description", "List deferrals on PR") will NOT appear in `git diff`
+     — workers edit PR bodies via `gh pr edit --body`. If a "## PR
+     description" section is present in the evidence below, scan it for
+     the row's required content (status table, audit section, etc.) and
+     mark `done` if present. **Do not mark such rows missing just
+     because they don't appear in the diff** — that's the wrong evidence
+     channel. If the PR description IS present and clearly contains
+     what the row asked for, the row is `done`.
+  9. If a row's diff exists but its test is missing, that row is `partial`,
      not `done`. The contract is "implementation + test", not "implementation
      alone".
   """
@@ -122,6 +133,7 @@ defmodule SymphonyElixir.Planning.Grader do
     diff = Keyword.get(evidence, :diff, "")
     test_output = Keyword.get(evidence, :test_output, "")
     notes = Keyword.get(evidence, :notes, "")
+    pr_body = Keyword.get(evidence, :pr_body)
 
     assigned = Map.get(dispatch.assigned_rows_json || %{}, "rows", [])
     plan_rows = Map.get(plan.plan_json || %{}, "rows", [])
@@ -130,11 +142,19 @@ defmodule SymphonyElixir.Planning.Grader do
       "## Plan (full context)\n\n```json\n#{Jason.encode!(plan_rows, pretty: true)}\n```",
       "## Rows assigned to this dispatch\n\n```json\n#{Jason.encode!(assigned, pretty: true)}\n```",
       "## Branch state vs base\n\nThis is a structured summary (file list + commit subjects + diff stats), NOT a full diff dump. Match `assigned_rows[*].touches` paths against the file list, and match row IDs / contract numbers against commit subjects.\n\n```\n#{truncate(diff, 200_000)}\n```",
+      pr_body_section(pr_body),
       "## Test output\n\n```\n#{truncate(test_output, 20_000)}\n```",
       if(notes != "", do: "## Additional context\n\n#{notes}", else: nil)
     ]
 
     sections |> Enum.reject(&is_nil/1) |> Enum.join("\n\n---\n\n")
+  end
+
+  defp pr_body_section(nil), do: nil
+  defp pr_body_section(""), do: nil
+
+  defp pr_body_section(pr_body) do
+    "## PR description (live from GitHub)\n\nUse this to evaluate rows whose deliverable is a PR-description edit (status tables, contract audits, deferral lists). Workers update PR descriptions via `gh pr edit --body`, which leaves no `git diff` trace — this section is the only evidence available for those rows.\n\n```json\n#{truncate(pr_body, 50_000)}\n```"
   end
 
   defp truncate(text, max) when is_binary(text) and byte_size(text) > max do

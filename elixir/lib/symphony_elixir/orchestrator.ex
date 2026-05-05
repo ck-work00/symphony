@@ -846,10 +846,16 @@ defmodule SymphonyElixir.Orchestrator do
              %SymphonyElixir.Planning.Plan{} = plan <-
                SymphonyElixir.Repo.get(SymphonyElixir.Planning.Plan, dispatch.plan_id),
              {:ok, diff} <- fetch_dispatch_diff(running_entry) do
+          # External evidence: PR description. Worker can edit it via
+          # `gh pr edit --body`, but it's not in `git diff`. Without this
+          # the Grader can never verify "update PR description" rows.
+          pr_body = fetch_pr_body(running_entry)
+
           case SymphonyElixir.Planning.Workflow.grade_dispatch(dispatch,
                  plan: plan,
                  diff: diff,
-                 test_output: ""
+                 test_output: "",
+                 pr_body: pr_body
                ) do
             {:ok, {verdict, _updated_plan}} ->
               Logger.info(
@@ -926,6 +932,47 @@ defmodule SymphonyElixir.Orchestrator do
     else
       {:ok, ""}
     end
+  end
+
+  # External-evidence fetcher: pull the current PR description for the
+  # issue's open PR, so the Grader can verify rows whose deliverable lives
+  # in PR-body markdown rather than in the git tree.
+  defp fetch_pr_body(running_entry) do
+    workspace_path =
+      with identifier when is_binary(identifier) <- running_entry[:identifier],
+           workspace = Path.join(SymphonyElixir.Config.workspace_root(), identifier),
+           slot_file = Path.join(workspace, ".symphony_slot"),
+           {:ok, content} <- File.read(slot_file),
+           [_, dir] <- Regex.run(~r/DIRECTORY=(.+)/, content) do
+        String.trim(dir)
+      else
+        _ -> nil
+      end
+
+    cond do
+      not is_binary(running_entry[:identifier]) ->
+        nil
+
+      workspace_path == nil or not File.dir?(workspace_path) ->
+        nil
+
+      true ->
+        identifier = running_entry[:identifier]
+        # `gh pr list --search "<id>"` is repo-scoped via the slot's git remote.
+        cmd =
+          ~s|gh pr list --search "#{identifier}" --state open --json number,url,body,title --jq '.[0]'|
+
+        case System.cmd("sh", ["-c", cmd], cd: workspace_path, stderr_to_stdout: true) do
+          {output, 0} ->
+            trimmed = String.trim(output)
+            if trimmed in ["", "null"], do: nil, else: trimmed
+
+          _ ->
+            nil
+        end
+    end
+  rescue
+    _ -> nil
   end
 
   defp read_base_branch(workspace_path) do

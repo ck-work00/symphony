@@ -27,25 +27,76 @@ ls -la priv/static/assets/app.js
 source .symphony_slot
 curl -sf "http://localhost:$PHOENIX_PORT/" >/dev/null && echo "backend up"
 curl -sf "http://localhost:$FRONTEND_PORT/" >/dev/null && echo "frontend up"
+
+# Playwright is on the system via npx — verify (will install Chromium on first call)
+npx --yes playwright --version
 ```
 
 If `app.js` is < ~250KB, the bundle is a stub — rebuild and retry. If preflight fails, post a `## Tester Report` with `Recommendation: BLOCKED` and stop.
 
-### Step 3: Walk every Contract row
+### Step 3: How to drive a real browser (use this — do NOT report "no Playwright tooling")
+
+You are running inside Symphony's harness with an empty MCP server config — there is no Playwright MCP. **That does not mean Playwright is unavailable.** It is installed on the system. Drive it directly from Bash via `npx playwright`.
+
+The pattern: write a one-shot Node script per page that opens both the React and LV URLs, takes screenshots at desktop (1280) and tablet (768) widths, and prints any console errors. Then upload the PNGs to Linear via `${SYMPHONY_SCRIPTS}linear-upload-image.sh` and embed the asset URLs in your Tester Report.
+
+Example you can adapt — save as `/tmp/walk-<page>.mjs` and run `node /tmp/walk-<page>.mjs`:
+
+```javascript
+import { chromium } from 'playwright';
+
+const FRONTEND = `http://localhost:${process.env.FRONTEND_PORT}`;
+const PAGE = process.argv[2] || '/issues';
+const COOKIE = process.env.SESSION_COOKIE; // log in once, save to env
+
+const errors = [];
+const browser = await chromium.launch();
+
+for (const [width, label] of [[1280, 'desktop'], [768, 'tablet']]) {
+  for (const [flagState, urlSuffix] of [['react', '?lv=off'], ['lv', '?lv=on']]) {
+    const ctx = await browser.newContext({ viewport: { width, height: 900 }, storageState: { cookies: [{name:'_session', value: COOKIE, domain:'localhost', path:'/'}], origins: [] } });
+    const page = await ctx.newPage();
+    page.on('console', msg => { if (msg.type() === 'error') errors.push(`${flagState} ${label} ${PAGE}: ${msg.text()}`); });
+    await page.goto(`${FRONTEND}${PAGE}${urlSuffix}`, { waitUntil: 'networkidle' });
+    await page.screenshot({ path: `/tmp/walk-${PAGE.replaceAll('/','_')}-${flagState}-${label}.png`, fullPage: true });
+    await ctx.close();
+  }
+}
+
+await browser.close();
+console.log(JSON.stringify({ errors }, null, 2));
+```
+
+Then for each page:
+
+```bash
+node /tmp/walk-<page>.mjs <route>
+# Upload screenshots and collect Linear asset URLs
+URLS=""
+for img in /tmp/walk-<page>-*.png; do
+  URL=$("${SYMPHONY_SCRIPTS}linear-upload-image.sh" "$img")
+  URLS="$URLS\n![$(basename "$img" .png)]($URL)"
+done
+echo -e "$URLS"
+```
+
+If `npx playwright` fails to launch Chromium (first-run), do `npx --yes playwright install chromium` once and retry.
+
+### Step 4: Walk every Contract row
 
 For each row in the Contract:
 
-1. Navigate to the relevant page in the browser.
-2. **Two-record rule.** Walk it on at least two representative records (empty + populated, two card variants, or one of each role-gated record).
-3. **Click everything** the row covers — buttons, dropdowns, dialogs, drag targets, keyboard shortcuts. The point is to surface event handlers that crash on second-render.
-4. **For LV-vs-React migrations**: navigate to the React URL (flag off) and the LV URL (flag on) side-by-side at desktop (≥1280px) and tablet (~768px) widths. Diff the rendering character-by-character on copy, icon name, badge variant, dropdown option format. Take screenshots of both.
-5. **Console must be clean.** Open the browser console. New errors are blockers; pre-existing warnings are allowed only if listed in the Contract's "Known issues" section.
+1. Run the Playwright script for the route covering this row.
+2. **Two-record rule.** Walk it on at least two representative records (empty + populated, two card variants, or one of each role-gated record). Add a second route invocation with a different record id.
+3. **Click everything** the row covers — buttons, dropdowns, dialogs, drag targets, keyboard shortcuts. Extend the script with `page.click()` / `page.keyboard.press()` calls. The point is to surface event handlers that crash on second-render.
+4. **For LV-vs-React migrations**: the script above already loads both URLs side-by-side. Diff the resulting screenshots character-by-character on copy, icon name, badge variant, dropdown option format.
+5. **Console must be clean.** The script's `errors` output is your evidence. New errors are blockers; pre-existing warnings are allowed only if listed in the Contract's "Known issues" section.
 6. Mark the row in your scratchpad:
    - `✅ verified` — implemented and behaves like the spec
    - `⚠ partial` — implemented but with drift; describe the drift specifically
    - `❌ missing or broken` — not implemented, or implemented but crashes / misbehaves
 
-### Step 4: Post the Tester Report
+### Step 5: Post the Tester Report
 
 Post a `## Tester Report` comment on the Linear issue. Format:
 
@@ -84,7 +135,7 @@ The `Recommendation:` line is parsed by the orchestrator. Choose:
 - **REQUEST_CHANGES** — at least one row is `⚠` or `❌`. The orchestrator re-dispatches Implement to address the gaps.
 - **BLOCKED** — the page can't be tested at all (preflight failed, page won't load, slot is broken). Include a description of the blocker.
 
-### Step 5: Stop
+### Step 6: Stop
 
 Do NOT modify code. Do NOT push. Do NOT open or close PRs. Your only output is the Tester Report comment.
 

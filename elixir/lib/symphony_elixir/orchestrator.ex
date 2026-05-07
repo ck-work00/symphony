@@ -485,7 +485,9 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
+  defp terminate_running_issue(state, issue_id, cleanup_workspace, reason \\ {:terminated, :stalled_or_forced})
+
+  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace, reason) do
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
@@ -497,7 +499,7 @@ defmodule SymphonyElixir.Orchestrator do
         # Without this, stalls / forced terminations leave runs.outcome NULL
         # because Process.demonitor(ref, [:flush]) eats the natural DOWN that
         # would otherwise have triggered record_completed_history.
-        {state, _eval} = record_completed_history(state, running_entry, {:terminated, :stalled_or_forced})
+        {state, _eval} = record_completed_history(state, running_entry, reason)
         maybe_grade_plan_dispatch(running_entry)
 
         if cleanup_workspace do
@@ -1684,11 +1686,12 @@ defmodule SymphonyElixir.Orchestrator do
       running_entry ->
         Logger.warning("Stopping issue via dashboard action: issue_id=#{issue_id} issue_identifier=#{running_entry.identifier}")
 
+        # terminate_running_issue records completion + session totals already.
+        # record_completed_history returns {state, eval} — re-piping it as
+        # state crashed the GenServer.
         state =
           state
-          |> terminate_running_issue(issue_id, false)
-          |> record_completed_history(running_entry, {:shutdown, :stopped})
-          |> record_session_completion_totals(running_entry)
+          |> terminate_running_issue(issue_id, false, {:shutdown, :stopped})
           |> complete_issue(issue_id)
 
         notify_dashboard()

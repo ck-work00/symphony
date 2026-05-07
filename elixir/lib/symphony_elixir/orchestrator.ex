@@ -807,12 +807,45 @@ defmodule SymphonyElixir.Orchestrator do
             metadata
         end
 
-      {:ok, {:complete, _plan}} ->
-        Logger.info(
-          "Plan complete for #{issue.identifier}; deferring to PhaseJudge for next phase"
-        )
+      {:ok, {:complete, plan}} ->
+        # Plan rows all done — but if the Tester left a fresh REQUEST_CHANGES
+        # report (newer than the last Implement dispatch), the loop is
+        # otherwise stuck Test→Test→Test because the tester sub-agent is
+        # forbidden from modifying code. Flip all done rows to partial and
+        # force a fresh Implement dispatch so the worker addresses the
+        # tester's gaps. The Grader on next DOWN re-verifies, snapping
+        # untouched rows back to done.
+        case fresh_tester_request_changes?(issue, plan) do
+          {:request_changes, reason} ->
+            with {:ok, reopened} <- reopen_done_rows(plan, reason),
+                 open <- SymphonyElixir.Planning.Plan.open_rows(reopened),
+                 {:ok, dispatch} <-
+                   SymphonyElixir.Planning.Workflow.start_implement_dispatch(reopened, open) do
+              Logger.info(
+                "Tester REQUEST_CHANGES on #{issue.identifier}; reopening #{length(open)} done rows and dispatching Implement to address gaps"
+              )
 
-        metadata
+              metadata
+              |> Map.put(:retask_phases, ["Implement"])
+              |> Map.put(:assigned_rows, open)
+              |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(reopened))
+              |> Map.put(:plan_dispatch_id, dispatch.id)
+            else
+              err ->
+                Logger.warning(
+                  "Failed to reopen rows for tester REQUEST_CHANGES on #{issue.identifier}: #{inspect(err)}; falling back to PhaseJudge"
+                )
+
+                metadata
+            end
+
+          _ ->
+            Logger.info(
+              "Plan complete for #{issue.identifier}; deferring to PhaseJudge for next phase"
+            )
+
+            metadata
+        end
 
       {:error, reason} ->
         Logger.warning(
@@ -828,6 +861,91 @@ defmodule SymphonyElixir.Orchestrator do
       )
 
       metadata
+  end
+
+  # When the Tester sub-agent posts `## Tester Report` with
+  # `Recommendation: REQUEST_CHANGES` AFTER the most recent successful
+  # Implement dispatch, that's a signal the work has gaps but the tester
+  # can't close them itself. PhaseJudge keeps re-dispatching Test in this
+  # case (because Test stays missing without APPROVE), creating an infinite
+  # loop. We detect this here and force the next dispatch to Implement.
+  defp fresh_tester_request_changes?(issue, plan) do
+    issue_id = Map.get(issue, :id)
+
+    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
+      {:ok, comments} ->
+        latest_report = latest_tester_report(comments)
+        last_implement_finish = last_implement_dispatch_finish(plan)
+
+        cond do
+          is_nil(latest_report) ->
+            :no_report
+
+          not request_changes?(latest_report.body) ->
+            :report_not_request_changes
+
+          is_nil(last_implement_finish) ->
+            {:request_changes, "tester REQUEST_CHANGES (no prior Implement dispatch)"}
+
+          DateTime.compare(latest_report.created_at, last_implement_finish) == :gt ->
+            {:request_changes,
+             "tester REQUEST_CHANGES at #{DateTime.to_iso8601(latest_report.created_at)} (newer than last Implement at #{DateTime.to_iso8601(last_implement_finish)})"}
+
+          true ->
+            :report_stale
+        end
+
+      _ ->
+        :linear_fetch_failed
+    end
+  rescue
+    _ -> :crash
+  end
+
+  defp latest_tester_report(comments) do
+    comments
+    |> Enum.filter(fn c ->
+      is_binary(c.body) and String.contains?(c.body, "## Tester Report") and c.created_at != nil
+    end)
+    |> Enum.max_by(fn c -> DateTime.to_unix(c.created_at) end, fn -> nil end)
+  end
+
+  defp request_changes?(body) when is_binary(body) do
+    String.contains?(body, "Recommendation: REQUEST_CHANGES") or
+      String.contains?(body, "**Recommendation:** REQUEST_CHANGES")
+  end
+
+  defp request_changes?(_), do: false
+
+  defp last_implement_dispatch_finish(%SymphonyElixir.Planning.Plan{id: plan_id}) do
+    SymphonyElixir.Planning.dispatches_for_plan(plan_id)
+    |> Enum.filter(fn d -> d.role == "implement" and d.finished_at != nil end)
+    |> Enum.max_by(fn d -> DateTime.to_unix(d.finished_at) end, fn -> nil end)
+    |> then(fn
+      nil -> nil
+      d -> d.finished_at
+    end)
+  end
+
+  # Flip every `done` row back to `partial` with a rationale, persist, return
+  # the updated plan. Deferred and partial/missing rows are left alone.
+  defp reopen_done_rows(%SymphonyElixir.Planning.Plan{} = plan, rationale) do
+    new_rows =
+      plan
+      |> SymphonyElixir.Planning.Plan.rows()
+      |> Enum.map(fn row ->
+        case row["state"] do
+          "done" ->
+            row
+            |> Map.put("state", "partial")
+            |> Map.put("rationale", rationale)
+
+          _ ->
+            row
+        end
+      end)
+
+    SymphonyElixir.Planning.replace_rows(plan, new_rows)
   end
 
   # After a plan-driven worker dispatch finishes, grade its diff against the

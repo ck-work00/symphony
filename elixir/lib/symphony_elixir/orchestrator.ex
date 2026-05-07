@@ -910,12 +910,33 @@ defmodule SymphonyElixir.Orchestrator do
     |> Enum.max_by(fn c -> DateTime.to_unix(c.created_at) end, fn -> nil end)
   end
 
+  # A Tester Report is "request_changes-like" if it does NOT cleanly approve.
+  # Tester sub-agents in practice emit non-canonical strings like
+  # `Recommendation: 🚫 BLOCK`, `Recommendation: ⚠ APPROVE-AFTER-PUSH`, or
+  # `Recommendation: REQUEST_CHANGES`. Treat anything that isn't a strict
+  # `Recommendation: APPROVE` (with no `-AFTER-` / `-WITH-` qualifier) as
+  # "needs more work."
   defp request_changes?(body) when is_binary(body) do
-    String.contains?(body, "Recommendation: REQUEST_CHANGES") or
-      String.contains?(body, "**Recommendation:** REQUEST_CHANGES")
+    not strict_tester_approve?(body)
   end
 
   defp request_changes?(_), do: false
+
+  # Strict approve: `Recommendation: APPROVE` followed by end-of-line or
+  # whitespace, with no qualifier like `APPROVE-AFTER-PUSH`. Optionally
+  # bolded (`**Recommendation:** APPROVE`).
+  defp strict_tester_approve?(body) when is_binary(body) do
+    Regex.match?(
+      ~r/Recommendation:\s*(?:\*\*\s*)?APPROVE(?:\s*\*\*)?(?=\s|$|\.)/m,
+      body
+    ) and
+      not Regex.match?(
+        ~r/Recommendation:[^\n]*APPROVE[-\s]+(?:AFTER|WITH|PENDING|SUBJECT|ONCE|IF|MODULO)/i,
+        body
+      )
+  end
+
+  defp strict_tester_approve?(_), do: false
 
   defp last_implement_dispatch_finish(%SymphonyElixir.Planning.Plan{id: plan_id}) do
     SymphonyElixir.Planning.dispatches_for_plan(plan_id)

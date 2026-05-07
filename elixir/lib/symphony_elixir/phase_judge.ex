@@ -309,11 +309,23 @@ defmodule SymphonyElixir.PhaseJudge do
     Enum.uniq(phases)
   end
 
-  # A Tester Report counts as APPROVE only if it explicitly says so.
-  # REQUEST_CHANGES / BLOCKED leaves the Test phase open so the orchestrator re-dispatches.
+  # A Tester Report counts as APPROVE only if it cleanly says so. Hybrid
+  # forms the tester sub-agent has actually emitted in the wild —
+  # `Recommendation: ⚠ APPROVE-AFTER-PUSH`, `APPROVE-WITH-CONDITIONS`,
+  # `APPROVE-PENDING-...` — must NOT count as APPROVE; they mean the work
+  # has gaps the tester can't close itself, and the loop needs to bounce
+  # back to Implement. Otherwise PhaseJudge marks Test done on a
+  # substring match and the orchestrator's tester→Implement override
+  # in maybe_attach_plan_assignment never gets a chance to fire.
   defp tester_approved?(text) do
     String.contains?(text, "## Tester Report") and
-      (String.contains?(text, "Recommendation: APPROVE") or
-         String.contains?(text, "**Recommendation:** APPROVE"))
+      Regex.match?(
+        ~r/Recommendation:\s*(?:\*\*\s*)?APPROVE(?:\s*\*\*)?(?=\s|$|\.)/m,
+        text
+      ) and
+      not Regex.match?(
+        ~r/Recommendation:[^\n]*APPROVE[-\s]+(?:AFTER|WITH|PENDING|SUBJECT|ONCE|IF|MODULO)/i,
+        text
+      )
   end
 end

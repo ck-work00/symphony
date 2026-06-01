@@ -348,14 +348,22 @@ empty), but discovery still needs the file, so the first prompt comes first.
   tests cover max-turns stop, terminal-state stop, turn-timeout raise+teardown,
   start_session failure. `Claude.CLI` is now dead code, kept until phase-7 cutover.
 
+## Phase 4 — built and validated (supervision + reaper)
+
+- `TmuxCLI.reap_orphan_sessions/1` kills tmux sessions matching the Symphony
+  prefix and removes their prompt temp files; no-op with no tmux server.
+  `Application.start/2` calls it on boot (guarded so it never blocks startup).
+  A freshly booted BEAM owns no runs, so any `symphony-*` session is a leak from
+  a crashed run. Assumes one orchestrator per host.
+- SessionWatcher stays linked to its run Task (under `TaskSupervisor`) — a dead
+  run already tears down its watcher, so no separate supervision is needed.
+- 3 tmux-tagged tests; verified live that booting reaps a leaked session.
+
 ## Open Items
 
 - Event delivery cadence to the dashboard — push every event, or coalesce.
-- **Phase 4 (next):** supervision — supervise SessionWatcher under a supervisor/
-  TaskSupervisor; add a startup reaper for orphaned `symphony-*` tmux sessions
-  whose JSONL is stale (BEAM-crash cleanup).
-- **Phase 5:** real end-to-end issue through the new path; compare dashboard +
-  token tracking against the old `-p` mode (capture before cutover).
+- **Phase 5 (next):** real end-to-end issue through the new path; compare
+  dashboard + token tracking against the old `-p` mode (capture before cutover).
 - **Phase 7:** delete `Claude.CLI` and its config/usage.
 
 ### Pre-existing test failures (not from this work)

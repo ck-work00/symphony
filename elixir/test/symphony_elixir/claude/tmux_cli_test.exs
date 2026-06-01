@@ -48,6 +48,54 @@ defmodule SymphonyElixir.Claude.TmuxCLITest do
     end
   end
 
+  describe "reap_orphan_sessions/1" do
+    @describetag :tmux
+
+    # Tagged :tmux — these drive a real tmux server. Exclude with
+    # `--exclude tmux` on hosts without tmux installed.
+    setup do
+      # Use a unique, test-only prefix so we never touch real symphony sessions.
+      prefix = "symphonytest#{System.unique_integer([:positive])}"
+      {:ok, prefix: prefix}
+    end
+
+    defp kill_on_exit(name) do
+      on_exit(fn -> System.cmd("tmux", ["kill-session", "-t", name], stderr_to_stdout: true) end)
+    end
+
+    test "kills sessions matching the prefix and reports them", %{prefix: prefix} do
+      name = "#{prefix}-#{System.unique_integer([:positive])}"
+      kill_on_exit(name)
+      {_, 0} = System.cmd("tmux", ["new-session", "-d", "-s", name], stderr_to_stdout: true)
+      assert {_, 0} = System.cmd("tmux", ["has-session", "-t", name], stderr_to_stdout: true)
+
+      assert TmuxCLI.reap_orphan_sessions(prefix) == [name]
+      assert {_, code} = System.cmd("tmux", ["has-session", "-t", name], stderr_to_stdout: true)
+      assert code != 0
+    end
+
+    test "leaves sessions that do not match the prefix", %{prefix: prefix} do
+      other = "unrelated-#{System.unique_integer([:positive])}"
+      kill_on_exit(other)
+      {_, 0} = System.cmd("tmux", ["new-session", "-d", "-s", other], stderr_to_stdout: true)
+
+      assert TmuxCLI.reap_orphan_sessions(prefix) == []
+      assert {_, 0} = System.cmd("tmux", ["has-session", "-t", other], stderr_to_stdout: true)
+    end
+
+    test "removes the reaped session's prompt temp files", %{prefix: prefix} do
+      session_id = "#{System.unique_integer([:positive])}"
+      name = "#{prefix}-#{session_id}"
+      kill_on_exit(name)
+      tmp = Path.join(System.tmp_dir!(), "symphony-#{session_id}-1.txt")
+      File.write!(tmp, "prompt")
+      {_, 0} = System.cmd("tmux", ["new-session", "-d", "-s", name], stderr_to_stdout: true)
+
+      assert TmuxCLI.reap_orphan_sessions(prefix) == [name]
+      refute File.exists?(tmp)
+    end
+  end
+
   describe "start_session/3 workspace validation" do
     test "rejects a workspace outside the configured roots" do
       assert {:error, {:invalid_workspace_cwd, :outside_root}} =

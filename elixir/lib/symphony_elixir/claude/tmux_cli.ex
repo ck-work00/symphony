@@ -158,9 +158,43 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
     do_await_jsonl(session_id, poll_ms, deadline)
   end
 
+  @doc """
+  Kill leftover Symphony tmux sessions and remove their prompt temp files.
+
+  Called at application startup: a freshly-booted BEAM owns no agent runs, so any
+  tmux session matching the Symphony prefix is a leak from a previous run that
+  crashed before `stop_session/1` ran (the tmux session outlives the BEAM). This
+  assumes a single Symphony orchestrator per host, which is the deployment model.
+
+  Returns the list of session names reaped. Safe to call when no tmux server is
+  running (returns `[]`).
+  """
+  @spec reap_orphan_sessions(String.t()) :: [String.t()]
+  def reap_orphan_sessions(prefix \\ nil) do
+    prefix = prefix || Config.claude_tmux_session_prefix()
+
+    case tmux(["list-sessions", "-F", "#S"]) do
+      {output, 0} ->
+        output
+        |> String.split("\n", trim: true)
+        |> Enum.filter(&String.starts_with?(&1, prefix <> "-"))
+        |> Enum.map(fn name ->
+          kill_session(name)
+          cleanup_prompt_files(session_id_from_name(name, prefix))
+          name
+        end)
+
+      _ ->
+        # No tmux server (nothing to reap) or tmux not installed.
+        []
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Internals
   # ---------------------------------------------------------------------------
+
+  defp session_id_from_name(name, prefix), do: String.replace_prefix(name, prefix <> "-", "")
 
   defp settle_paste do
     Process.sleep(Config.claude_tmux_paste_settle_ms())

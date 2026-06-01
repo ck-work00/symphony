@@ -314,9 +314,31 @@ Findings that shaped the implementation:
 - **`capture-pane -p` right-pads with blank lines** — strip trailing blanks before
   taking the input-box tail, or the tail is all padding.
 
+## Phase 2 — built and validated (`Claude.SessionWatcher`)
+
+`SymphonyElixir.Claude.SessionWatcher` is implemented and proven live: a tool-using
+turn (echo + reply) plus a plain turn streamed through `on_event` (system,
+assistant, tool_result events) and `wait_for_turn/2` returned turn 1 then turn 2
+with correct usage — completing only at the main-chain `end_turn`, never at the
+intermediate `tool_use`. 7 unit tests cover turn detection, sidechain filtering,
+partial-line buffering, multi-turn sequencing, and timeout. Config: poll cadence is
+`:claude` → `tmux_jsonl_poll_interval_ms` (default 250 ms).
+
+Turn detection counts main-chain (`isSidechain` != true) assistant `end_turn`
+messages in order; the Nth `end_turn` is turn N. `wait_for_turn/2` blocks for the
+next turn in sequence and the watcher enforces the timeout itself (replies
+`{:error, :timeout}`), so no caller leaks.
+
+**Integration ordering for Phase 3 (AgentRunner):** the JSONL does not exist until
+the first turn runs, and `session_jsonl_path/1` finds it by filename — so the order
+is: `start_session` → `send_prompt(turn 1)` → `await_jsonl` → start
+`SessionWatcher` on that path (it reads from offset 0, replaying turn 1's events) →
+`wait_for_turn(1)` → loop. The watcher tolerates a not-yet-existing path (reads
+empty), but discovery still needs the file, so the first prompt comes first.
+
 ## Open Items
 
-- Event delivery cadence to the dashboard — push every event, or coalesce. (Phase 2/3, `SessionWatcher`.)
+- Event delivery cadence to the dashboard — push every event, or coalesce. (Phase 3, `AgentRunner` wiring.)
 - `Ctrl-U` clears only one input line, not a whole multi-line paste. Harmless
   today (the improved verification means retries don't fire on the normal path,
   and startup-race retries hit an empty input), but if a true mid-paste retry ever

@@ -47,6 +47,7 @@ defmodule SymphonyElixir.Config do
   @default_claude_tmux_ready_poll_interval_ms 500
   @default_claude_tmux_ready_timeout_ms 30_000
   @default_claude_tmux_jsonl_base_path "~/.claude/projects"
+  @default_claude_tmux_jsonl_poll_interval_ms 250
   @default_codex_turn_timeout_ms 3_600_000
   @default_codex_read_timeout_ms 5_000
   @default_codex_stall_timeout_ms 300_000
@@ -240,6 +241,10 @@ defmodule SymphonyElixir.Config do
                                  tmux_jsonl_base_path: [
                                    type: :string,
                                    default: @default_claude_tmux_jsonl_base_path
+                                 ],
+                                 tmux_jsonl_poll_interval_ms: [
+                                   type: :pos_integer,
+                                   default: @default_claude_tmux_jsonl_poll_interval_ms
                                  ]
                                ]
                              ],
@@ -572,6 +577,11 @@ defmodule SymphonyElixir.Config do
     get_in(validated_workflow_options(), [:claude, :tmux_jsonl_base_path])
   end
 
+  @spec claude_tmux_jsonl_poll_interval_ms() :: pos_integer()
+  def claude_tmux_jsonl_poll_interval_ms do
+    get_in(validated_workflow_options(), [:claude, :tmux_jsonl_poll_interval_ms])
+  end
+
   @spec codex_command() :: String.t()
   def codex_command do
     get_in(validated_workflow_options(), [:codex, :command])
@@ -864,6 +874,7 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:tmux_ready_poll_interval_ms, positive_integer_value(Map.get(section, "tmux_ready_poll_interval_ms")))
     |> put_if_present(:tmux_ready_timeout_ms, positive_integer_value(Map.get(section, "tmux_ready_timeout_ms")))
     |> put_if_present(:tmux_jsonl_base_path, scalar_string_value(Map.get(section, "tmux_jsonl_base_path")))
+    |> put_if_present(:tmux_jsonl_poll_interval_ms, positive_integer_value(Map.get(section, "tmux_jsonl_poll_interval_ms")))
   end
 
   defp extract_hooks_options(section) do

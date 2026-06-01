@@ -53,11 +53,14 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
   # Emit updates in the same {:codex_worker_update, ...} format the orchestrator
   # expects, so we stay compatible without rewriting the orchestrator.
+  #
+  # Token usage is deliberately NOT attached here. Interactive Claude reports
+  # per-message usage (each call re-counts the cached context), which the
+  # orchestrator's cumulative-delta accounting would misread. Instead we send one
+  # authoritative cumulative-usage update per turn from `send_turn_completed/4`.
   defp send_claude_update(recipient, %Issue{id: issue_id}, event)
        when is_binary(issue_id) and is_pid(recipient) do
-    timestamp = DateTime.utc_now()
     session_id = StreamParser.extract_session_id(event)
-    usage = StreamParser.extract_usage(event)
     event_type = Map.get(event, :event_type, :unknown)
 
     send(
@@ -65,9 +68,9 @@ defmodule SymphonyElixir.Claude.AgentRunner do
       {:codex_worker_update, issue_id,
        %{
          event: event_type,
-         timestamp: timestamp,
+         timestamp: DateTime.utc_now(),
          session_id: session_id,
-         usage: usage,
+         usage: nil,
          raw: event
        }}
     )
@@ -76,6 +79,41 @@ defmodule SymphonyElixir.Claude.AgentRunner do
   end
 
   defp send_claude_update(_recipient, _issue, _event), do: :ok
+
+  # One per-turn update carrying the cumulative token usage and the turn number.
+  # The orchestrator's delta accounting reads `usage` as a monotonic per-session
+  # total, and `turn_count_for_update/3` reads `turn` to advance the dashboard
+  # TURN counter (interactive JSONL has no `init` event to count turns from).
+  defp send_turn_completed(recipient, %Issue{id: issue_id}, turn, cumulative_usage)
+       when is_binary(issue_id) and is_pid(recipient) and is_integer(turn) do
+    send(
+      recipient,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_completed,
+         turn: turn,
+         timestamp: DateTime.utc_now(),
+         session_id: nil,
+         usage: cumulative_usage,
+         raw: %{}
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_turn_completed(_recipient, _issue, _turn, _usage), do: :ok
+
+  defp add_usage(nil, usage), do: usage
+  defp add_usage(acc, nil), do: acc
+
+  defp add_usage(acc, usage) do
+    %{
+      input_tokens: (acc.input_tokens || 0) + (usage.input_tokens || 0),
+      output_tokens: (acc.output_tokens || 0) + (usage.output_tokens || 0),
+      total_tokens: (acc.total_tokens || 0) + (usage.total_tokens || 0)
+    }
+  end
 
   defp send_phase_update(recipient, %Issue{id: issue_id}, phase)
        when is_pid(recipient) and is_atom(phase) do
@@ -150,7 +188,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
              on_event: claude_event_handler(ctx.recipient, issue)
            ) do
       try do
-        await_and_continue(ctx, issue, session, watcher, 1, turn_started_at, 0)
+        await_and_continue(ctx, issue, session, watcher, 1, turn_started_at, 0, nil)
       after
         ctx.watcher_mod.stop(watcher)
       end
@@ -161,9 +199,12 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
   # Block until the turn already in flight completes, then run the between-turn
   # checks and either stop or send the next prompt and recurse.
-  defp await_and_continue(ctx, issue, session, watcher, turn_number, comments_after, no_progress_count) do
+  defp await_and_continue(ctx, issue, session, watcher, turn_number, comments_after, no_progress_count, cumulative_usage) do
     case ctx.watcher_mod.wait_for_turn(watcher, ctx.turn_timeout_ms) do
-      {:ok, _turn_summary} ->
+      {:ok, turn_summary} ->
+        cumulative_usage = add_usage(cumulative_usage, Map.get(turn_summary, :usage))
+        send_turn_completed(ctx.recipient, issue, turn_number, cumulative_usage)
+
         # Check workspace progress after each turn.
         # Skip no-progress counting on early turns — investigation and planning
         # produce no git changes but are essential work (reading code, posting to Linear).
@@ -191,7 +232,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
             :ok
 
           true ->
-            maybe_send_next_turn(ctx, issue, session, watcher, turn_number, comments_after, next_no_progress)
+            maybe_send_next_turn(ctx, issue, session, watcher, turn_number, comments_after, next_no_progress, cumulative_usage)
         end
 
       {:error, reason} ->
@@ -200,7 +241,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
     end
   end
 
-  defp maybe_send_next_turn(ctx, issue, session, watcher, turn_number, comments_after, no_progress_count) do
+  defp maybe_send_next_turn(ctx, issue, session, watcher, turn_number, comments_after, no_progress_count, cumulative_usage) do
     case continue_with_issue?(issue, ctx.issue_state_fetcher) do
       {:continue, refreshed_issue} when turn_number < ctx.max_turns ->
         next_turn = turn_number + 1
@@ -213,7 +254,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
         case ctx.session_mod.send_prompt(session, prompt, next_turn) do
           :ok ->
-            await_and_continue(ctx, refreshed_issue, session, watcher, next_turn, turn_started_at, no_progress_count)
+            await_and_continue(ctx, refreshed_issue, session, watcher, next_turn, turn_started_at, no_progress_count, cumulative_usage)
 
           {:error, reason} ->
             {:error, {:send_prompt_failed, reason}}

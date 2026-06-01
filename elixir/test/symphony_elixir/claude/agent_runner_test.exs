@@ -39,8 +39,16 @@ defmodule SymphonyElixir.Claude.AgentRunnerTest do
 
     def wait_for_turn(_watcher, _timeout) do
       case Application.get_env(:symphony_elixir, :fake_wait_result, :ok) do
-        :timeout -> {:error, :timeout}
-        :ok -> {:ok, %{turn: 0, stop_reason: "end_turn", usage: nil}}
+        :timeout ->
+          {:error, :timeout}
+
+        :ok ->
+          {:ok,
+           %{
+             turn: 0,
+             stop_reason: "end_turn",
+             usage: %{input_tokens: 10, output_tokens: 2, total_tokens: 12}
+           }}
       end
     end
 
@@ -127,6 +135,31 @@ defmodule SymphonyElixir.Claude.AgentRunnerTest do
     assert_raise RuntimeError, fn -> AgentRunner.run(issue("In Progress"), nil, opts) end
     assert sent_turns() == [1]
     assert_received :stopped
+  end
+
+  test "emits a :turn_completed update per turn with the turn number and cumulative usage" do
+    opts =
+      base_opts(
+        max_turns: 3,
+        issue_state_fetcher: fn _ids -> {:ok, [issue("In Progress")]} end
+      )
+
+    assert :ok = AgentRunner.run(issue("In Progress"), self(), opts)
+
+    completed =
+      Stream.repeatedly(fn ->
+        receive do
+          {:codex_worker_update, _id, %{event: :turn_completed} = u} -> {u.turn, u.usage.total_tokens}
+          {:codex_worker_update, _id, _other} -> :skip
+        after
+          0 -> :done
+        end
+      end)
+      |> Enum.take_while(&(&1 != :done))
+      |> Enum.reject(&(&1 == :skip))
+
+    # Three turns, cumulative total grows by 12 each turn.
+    assert completed == [{1, 12}, {2, 24}, {3, 36}]
   end
 
   test "raises and stops the session when start_session fails" do

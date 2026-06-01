@@ -1477,6 +1477,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp session_id_for_update(existing, _update), do: existing
 
+  # Interactive Claude (tmux) runs one persistent session, so there is no per-turn
+  # `:session_started`. Claude.AgentRunner instead emits a `:turn_completed` update
+  # carrying the turn number; trust it directly.
+  defp turn_count_for_update(_existing_count, _existing_session_id, %{
+         event: :turn_completed,
+         turn: turn
+       })
+       when is_integer(turn),
+       do: turn
+
   defp turn_count_for_update(existing_count, existing_session_id, %{
          event: :session_started,
          session_id: session_id

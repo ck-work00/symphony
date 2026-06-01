@@ -359,11 +359,48 @@ empty), but discovery still needs the file, so the first prompt comes first.
   run already tears down its watcher, so no separate supervision is needed.
 - 3 tmux-tagged tests; verified live that booting reaps a leaked session.
 
+## Phase 5 — comparison done; two dashboard gaps found
+
+Ran an identical trivial prompt through both paths and compared the observable
+stream (events, usage, session id).
+
+**Parity confirmed:** both paths surface the assistant message, a non-nil
+`session_id` (the `sessionId` fix makes this work in interactive mode), and token
+`usage`. Phase detection, PR-URL detection, and SYMPHONY_NEEDS_HELP all read
+assistant/tool events that the watcher emits unchanged. Token totals are the same
+order of magnitude (`-p` 16836 vs interactive 15594 on the sample).
+
+**Gap 1 — `turn_count` never increments.** The orchestrator increments the
+dashboard TURN counter only on `:session_started` events (a `system`/`init`
+subtype). Interactive JSONL emits **no `init` event** (only `system`/`turn_duration`
+at each turn end), so `turn_count_for_update` never fires. In `-p` mode each turn
+was a fresh process that re-emitted `init`, so the counter advanced per turn.
+
+**Gap 2 — token accounting semantics differ.** `compute_token_delta` treats each
+event's usage as a monotonically increasing per-session cumulative total and sums
+deltas. `-p` reported a per-turn `result` total; interactive reports per-assistant-
+message usage where `input_tokens` re-counts the cached context each call. The
+dashboard total still grows and displays, but it tracks roughly the final context
+size rather than summed consumption.
+
+**Other:** interactive has no terminal `result` event (expected); the user-prompt
+JSONL entry is categorized `:tool_result` and metadata entries as `:unknown` —
+cosmetic, no downstream effect.
+
+Both gaps live in `orchestrator.ex` token/turn accounting that was shaped for the
+`-p`/Codex event shapes. Candidate fixes: count turns from the watcher's
+main-chain `end_turn` (or the `system`/`turn_duration` event) instead of
+`:session_started`; and treat each turn's `end_turn` usage as that turn's total.
+**Not yet implemented** — `orchestrator.ex` and `presenter.ex` have unrelated
+uncommitted edits, so the accounting change should be coordinated with that work.
+
 ## Open Items
 
+- Wire the two Phase-5 dashboard fixes into the orchestrator (turn count + token
+  accounting), coordinated with the in-flight `orchestrator.ex`/`presenter.ex` edits.
+- Real end-to-end run driving an actual Linear issue through the orchestrator
+  (creates a branch/PR/Linear comments — needs explicit go-ahead + a test issue).
 - Event delivery cadence to the dashboard — push every event, or coalesce.
-- **Phase 5 (next):** real end-to-end issue through the new path; compare
-  dashboard + token tracking against the old `-p` mode (capture before cutover).
 - **Phase 7:** delete `Claude.CLI` and its config/usage.
 
 ### Pre-existing test failures (not from this work)

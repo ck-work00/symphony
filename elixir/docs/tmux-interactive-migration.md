@@ -387,21 +387,27 @@ size rather than summed consumption.
 JSONL entry is categorized `:tool_result` and metadata entries as `:unknown` —
 cosmetic, no downstream effect.
 
-Both gaps live in `orchestrator.ex` token/turn accounting that was shaped for the
-`-p`/Codex event shapes. Candidate fixes: count turns from the watcher's
-main-chain `end_turn` (or the `system`/`turn_duration` event) instead of
-`:session_started`; and treat each turn's `end_turn` usage as that turn's total.
-**Not yet implemented** — `orchestrator.ex` and `presenter.ex` have unrelated
-uncommitted edits, so the accounting change should be coordinated with that work.
+**Both gaps fixed** (the fix lives in `AgentRunner`, the code this migration owns,
+plus one additive orchestrator clause — kept separate from the unrelated
+uncommitted `orchestrator.ex`/`presenter.ex` edits):
+
+- Turn count: `AgentRunner` emits a `:turn_completed` update carrying the turn
+  number after each turn; a new `turn_count_for_update/3` clause trusts it.
+- Token accounting: `AgentRunner` now withholds per-event usage and sends one
+  cumulative usage total per turn on the `:turn_completed` update — the
+  monotonic-cumulative shape the orchestrator's existing delta logic expects — so
+  per-turn deltas and the running total are correct without changing that logic.
+
+`extract_token_usage` reads only `update[:usage]` (never `raw`), so nulling
+per-event usage cleanly removes it from accounting. Unit-tested: `:turn_completed`
+carries turn 1/2/3 with cumulative totals 12/24/36.
 
 ## Open Items
 
-- Wire the two Phase-5 dashboard fixes into the orchestrator (turn count + token
-  accounting), coordinated with the in-flight `orchestrator.ex`/`presenter.ex` edits.
 - Real end-to-end run driving an actual Linear issue through the orchestrator
-  (creates a branch/PR/Linear comments — needs explicit go-ahead + a test issue).
+  (creates a branch/PR/Linear comments — needs a designated test issue).
 - Event delivery cadence to the dashboard — push every event, or coalesce.
-- **Phase 7:** delete `Claude.CLI` and its config/usage.
+- **Phase 7:** delete `Claude.CLI` and its config/usage (after the real-issue run).
 
 ### Pre-existing test failures (not from this work)
 Timing-sensitive tests in `core_test`, `orchestrator_status_test`, `extensions_test`,

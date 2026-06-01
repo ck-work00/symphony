@@ -336,9 +336,34 @@ is: `start_session` → `send_prompt(turn 1)` → `await_jsonl` → start
 `wait_for_turn(1)` → loop. The watcher tolerates a not-yet-existing path (reads
 empty), but discovery still needs the file, so the first prompt comes first.
 
+## Phase 3 — built and validated (`StreamParser` + `AgentRunner`)
+
+- `StreamParser.extract_session_id/1` now also matches camelCase `sessionId`.
+- `AgentRunner` drives one long-lived session: `start_session` → per turn
+  `send_prompt` + `SessionWatcher.wait_for_turn` → between-turn checks → send
+  next. All between-turn logic (comments, progress, PhaseJudge, no-progress,
+  issue-state, max_turns) is unchanged. Session/watcher torn down in `after`
+  blocks; a failed turn/send raises (recovery deferred).
+- Collaborators (`session_module` / `watcher_module`) are injectable; 4 unit
+  tests cover max-turns stop, terminal-state stop, turn-timeout raise+teardown,
+  start_session failure. `Claude.CLI` is now dead code, kept until phase-7 cutover.
+
 ## Open Items
 
-- Event delivery cadence to the dashboard — push every event, or coalesce. (Phase 3, `AgentRunner` wiring.)
+- Event delivery cadence to the dashboard — push every event, or coalesce.
+- **Phase 4 (next):** supervision — supervise SessionWatcher under a supervisor/
+  TaskSupervisor; add a startup reaper for orphaned `symphony-*` tmux sessions
+  whose JSONL is stale (BEAM-crash cleanup).
+- **Phase 5:** real end-to-end issue through the new path; compare dashboard +
+  token tracking against the old `-p` mode (capture before cutover).
+- **Phase 7:** delete `Claude.CLI` and its config/usage.
+
+### Pre-existing test failures (not from this work)
+Timing-sensitive tests in `core_test`, `orchestrator_status_test`, `extensions_test`,
+`workspace_and_config_test` fail nondeterministically on baseline. Separately,
+`core_test` "in-repo WORKFLOW.md renders correctly" fails deterministically due to
+the repo's uncommitted `WORKFLOW.md` edits (the `attempt #2` assertion) — confirmed
+independent of the migration.
 - `Ctrl-U` clears only one input line, not a whole multi-line paste. Harmless
   today (the improved verification means retries don't fire on the normal path,
   and startup-race retries hit an empty input), but if a true mid-paste retry ever

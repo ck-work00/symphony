@@ -39,6 +39,14 @@ defmodule SymphonyElixir.Config do
   @default_claude_max_turns 50
   @default_claude_permission_mode "default"
   @default_claude_dangerously_skip_permissions false
+  @default_claude_tmux_session_prefix "symphony"
+  @default_claude_tmux_width 200
+  @default_claude_tmux_height 50
+  @default_claude_tmux_startup_delay_ms 2_000
+  @default_claude_tmux_paste_settle_ms 700
+  @default_claude_tmux_ready_poll_interval_ms 500
+  @default_claude_tmux_ready_timeout_ms 30_000
+  @default_claude_tmux_jsonl_base_path "~/.claude/projects"
   @default_codex_turn_timeout_ms 3_600_000
   @default_codex_read_timeout_ms 5_000
   @default_codex_stall_timeout_ms 300_000
@@ -200,6 +208,38 @@ defmodule SymphonyElixir.Config do
                                  allowed_tools: [
                                    type: {:list, :string},
                                    default: []
+                                 ],
+                                 tmux_session_prefix: [
+                                   type: :string,
+                                   default: @default_claude_tmux_session_prefix
+                                 ],
+                                 tmux_width: [
+                                   type: :pos_integer,
+                                   default: @default_claude_tmux_width
+                                 ],
+                                 tmux_height: [
+                                   type: :pos_integer,
+                                   default: @default_claude_tmux_height
+                                 ],
+                                 tmux_startup_delay_ms: [
+                                   type: :non_neg_integer,
+                                   default: @default_claude_tmux_startup_delay_ms
+                                 ],
+                                 tmux_paste_settle_ms: [
+                                   type: :non_neg_integer,
+                                   default: @default_claude_tmux_paste_settle_ms
+                                 ],
+                                 tmux_ready_poll_interval_ms: [
+                                   type: :pos_integer,
+                                   default: @default_claude_tmux_ready_poll_interval_ms
+                                 ],
+                                 tmux_ready_timeout_ms: [
+                                   type: :pos_integer,
+                                   default: @default_claude_tmux_ready_timeout_ms
+                                 ],
+                                 tmux_jsonl_base_path: [
+                                   type: :string,
+                                   default: @default_claude_tmux_jsonl_base_path
                                  ]
                                ]
                              ],
@@ -492,6 +532,46 @@ defmodule SymphonyElixir.Config do
     end
   end
 
+  @spec claude_tmux_session_prefix() :: String.t()
+  def claude_tmux_session_prefix do
+    get_in(validated_workflow_options(), [:claude, :tmux_session_prefix])
+  end
+
+  @spec claude_tmux_width() :: pos_integer()
+  def claude_tmux_width do
+    get_in(validated_workflow_options(), [:claude, :tmux_width])
+  end
+
+  @spec claude_tmux_height() :: pos_integer()
+  def claude_tmux_height do
+    get_in(validated_workflow_options(), [:claude, :tmux_height])
+  end
+
+  @spec claude_tmux_startup_delay_ms() :: non_neg_integer()
+  def claude_tmux_startup_delay_ms do
+    get_in(validated_workflow_options(), [:claude, :tmux_startup_delay_ms])
+  end
+
+  @spec claude_tmux_paste_settle_ms() :: non_neg_integer()
+  def claude_tmux_paste_settle_ms do
+    get_in(validated_workflow_options(), [:claude, :tmux_paste_settle_ms])
+  end
+
+  @spec claude_tmux_ready_poll_interval_ms() :: pos_integer()
+  def claude_tmux_ready_poll_interval_ms do
+    get_in(validated_workflow_options(), [:claude, :tmux_ready_poll_interval_ms])
+  end
+
+  @spec claude_tmux_ready_timeout_ms() :: pos_integer()
+  def claude_tmux_ready_timeout_ms do
+    get_in(validated_workflow_options(), [:claude, :tmux_ready_timeout_ms])
+  end
+
+  @spec claude_tmux_jsonl_base_path() :: String.t()
+  def claude_tmux_jsonl_base_path do
+    get_in(validated_workflow_options(), [:claude, :tmux_jsonl_base_path])
+  end
+
   @spec codex_command() :: String.t()
   def codex_command do
     get_in(validated_workflow_options(), [:codex, :command])
@@ -776,6 +856,14 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:permission_mode, scalar_string_value(Map.get(section, "permission_mode")))
     |> put_if_present(:dangerously_skip_permissions, boolean_value(Map.get(section, "dangerously_skip_permissions")))
     |> put_if_present(:allowed_tools, csv_value(Map.get(section, "allowed_tools")))
+    |> put_if_present(:tmux_session_prefix, scalar_string_value(Map.get(section, "tmux_session_prefix")))
+    |> put_if_present(:tmux_width, positive_integer_value(Map.get(section, "tmux_width")))
+    |> put_if_present(:tmux_height, positive_integer_value(Map.get(section, "tmux_height")))
+    |> put_if_present(:tmux_startup_delay_ms, integer_value(Map.get(section, "tmux_startup_delay_ms")))
+    |> put_if_present(:tmux_paste_settle_ms, integer_value(Map.get(section, "tmux_paste_settle_ms")))
+    |> put_if_present(:tmux_ready_poll_interval_ms, positive_integer_value(Map.get(section, "tmux_ready_poll_interval_ms")))
+    |> put_if_present(:tmux_ready_timeout_ms, positive_integer_value(Map.get(section, "tmux_ready_timeout_ms")))
+    |> put_if_present(:tmux_jsonl_base_path, scalar_string_value(Map.get(section, "tmux_jsonl_base_path")))
   end
 
   defp extract_hooks_options(section) do

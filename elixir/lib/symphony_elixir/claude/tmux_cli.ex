@@ -201,14 +201,15 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
     :ok
   end
 
-  # Clear the input line (Ctrl-U), load the prompt buffer and paste it, then
-  # confirm a distinctive prefix of the prompt is visible in the pane. Clearing
-  # first makes a retry idempotent: a paste that rendered slower than the settle
-  # delay won't be duplicated on the next attempt.
+  # Clear the input, load the prompt buffer and paste it, then confirm the prompt
+  # is visible in the pane. Clearing first makes a retry idempotent: a paste that
+  # rendered slower than the settle delay won't be duplicated on the next attempt.
+  # A single Ctrl-U only clears one visual line, so we repeat it to wipe a
+  # multi-line input (e.g. an accumulated "[Pasted text]" block) entirely.
   defp paste_until_visible(_session_name, _prompt_file, _prompt, 0), do: {:error, :paste_not_visible}
 
   defp paste_until_visible(session_name, prompt_file, prompt, attempts_left) do
-    with {_, 0} <- tmux(["send-keys", "-t", pane(session_name), "C-u"]),
+    with {_, 0} <- tmux(["send-keys", "-t", pane(session_name), "-N", "25", "C-u"]),
          {_, 0} <- tmux(["load-buffer", prompt_file]),
          {_, 0} <- tmux(["paste-buffer", "-t", pane(session_name)]),
          :ok <- settle_paste() do
@@ -222,22 +223,30 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
     end
   end
 
-  # Confirm the paste reached the input box. The TUI renders short pastes
-  # literally (so we match a distinctive prefix of the prompt) but collapses large
-  # pastes into "[Pasted text #N]" placeholders (so the literal text never
-  # appears) — either is proof the paste landed. We only inspect the bottom of the
+  # Confirm the paste reached the input box. We only inspect the bottom of the
   # pane (where the input box lives), so a previous turn's prompt still in the
   # transcript can't produce a false positive. Whitespace runs are squished
   # because the TUI may reflow the pasted text.
-  @input_tail_lines 8
+  #
+  # Three independent signals, any of which proves the paste landed:
+  #   * the prompt's SUFFIX — for a large multi-line prompt the TUI collapses the
+  #     START into "[Pasted text #N]" placeholders but keeps the END literally at
+  #     the cursor, so the suffix is the most reliable signal (the placeholders
+  #     can scroll above our window when the literal tail is long);
+  #   * the prompt's PREFIX — short prompts render entirely literally;
+  #   * a "[Pasted text" placeholder — present when it happens to be in-window.
+  @input_tail_lines 12
 
   defp paste_visible?(session_name, prompt) do
-    needle = prompt_needle(prompt)
+    {prefix, suffix} = prompt_needles(prompt)
 
     case tmux(["capture-pane", "-t", pane(session_name), "-p"]) do
       {output, 0} ->
         tail = input_tail(output)
-        String.contains?(tail, "[Pasted text") or (needle != "" and String.contains?(tail, needle))
+
+        String.contains?(tail, "[Pasted text") or
+          (suffix != "" and String.contains?(tail, suffix)) or
+          (prefix != "" and String.contains?(tail, prefix))
 
       _ ->
         false
@@ -258,10 +267,12 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
     |> squish()
   end
 
-  defp prompt_needle(prompt) do
-    prompt
-    |> squish()
-    |> String.slice(0, 24)
+  # A distinctive prefix and suffix of the prompt (squished), each ~24 chars.
+  defp prompt_needles(prompt) do
+    squished = squish(prompt)
+    prefix = String.slice(squished, 0, 24)
+    suffix = if String.length(squished) > 24, do: String.slice(squished, -24, 24), else: ""
+    {prefix, suffix}
   end
 
   defp squish(text), do: text |> String.replace(~r/\s+/, " ") |> String.trim()

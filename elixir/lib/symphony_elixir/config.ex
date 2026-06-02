@@ -43,7 +43,7 @@ defmodule SymphonyElixir.Config do
   @default_claude_tmux_width 200
   @default_claude_tmux_height 50
   @default_claude_tmux_startup_delay_ms 2_000
-  @default_claude_tmux_paste_settle_ms 700
+  @default_claude_tmux_paste_settle_ms 1_500
   @default_claude_tmux_ready_poll_interval_ms 500
   @default_claude_tmux_ready_timeout_ms 30_000
   @default_claude_tmux_jsonl_base_path "~/.claude/projects"

@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, History, Orchestrator, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -11,15 +11,23 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        completed = Map.get(snapshot, :completed_history, [])
+        # An issue's open PR shown on every row for it (running or completed),
+        # even on a run that didn't itself detect the URL: DB-recorded PRs per
+        # issue, overlaid with any freshly-detected PRs in this live snapshot.
+        pr_by_issue =
+          History.pr_urls_by_issue()
+          |> Map.merge(detected_pr_urls(snapshot.running ++ completed))
+
         %{
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying)
           },
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
+          running: Enum.map(snapshot.running, &running_entry_payload(&1, pr_by_issue)),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          completed_history: Map.get(snapshot, :completed_history, []),
+          completed_history: Enum.map(completed, &completed_entry_payload(&1, pr_by_issue)),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -95,7 +103,7 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(nil, _retry), do: "retrying"
   defp issue_status(_running, _retry), do: "running"
 
-  defp running_entry_payload(entry) do
+  defp running_entry_payload(entry, pr_by_issue) do
     slot = read_slot_info(entry.identifier)
 
     %{
@@ -104,7 +112,7 @@ defmodule SymphonyElixirWeb.Presenter do
       state: entry.state,
       phase: Map.get(entry, :phase),
       phases_seen: Map.get(entry, :phases_seen, []),
-      pr_url: Map.get(entry, :pr_url),
+      pr_url: Map.get(entry, :pr_url) || Map.get(pr_by_issue, entry.identifier),
       screenshot_urls: Map.get(entry, :screenshot_urls, []),
       history_run_id: Map.get(entry, :history_run_id),
       session_id: entry.session_id,
@@ -149,6 +157,37 @@ defmodule SymphonyElixirWeb.Presenter do
       [_, value] -> value
       _ -> nil
     end
+  end
+
+  defp completed_entry_payload(entry, pr_by_issue) when is_map(entry) do
+    entry
+    |> Map.update(:last_message, nil, fn
+      nil -> nil
+      msg when is_binary(msg) -> msg
+      msg -> summarize_message(msg)
+    end)
+    # Show the issue's PR even on a no-op re-dispatch row that didn't detect one:
+    # a finished run that opened a PR earlier still has an open PR for the issue.
+    |> Map.update(:pr_url, nil, fn
+      nil -> Map.get(pr_by_issue, Map.get(entry, :issue_identifier))
+      url -> url
+    end)
+  end
+
+  # PR URLs freshly detected in this snapshot, keyed by issue identifier. Handles
+  # both entry shapes: running entries key the identifier as :identifier,
+  # completed-history entries as :issue_identifier.
+  defp detected_pr_urls(entries) when is_list(entries) do
+    Enum.reduce(entries, %{}, fn entry, acc ->
+      identifier = Map.get(entry, :issue_identifier) || Map.get(entry, :identifier)
+      pr_url = Map.get(entry, :pr_url)
+
+      if is_binary(identifier) and is_binary(pr_url) and not Map.has_key?(acc, identifier) do
+        Map.put(acc, identifier, pr_url)
+      else
+        acc
+      end
+    end)
   end
 
   defp retry_entry_payload(entry) do

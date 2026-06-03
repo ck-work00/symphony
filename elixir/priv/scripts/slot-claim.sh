@@ -19,7 +19,7 @@ fi
 # Idempotent: if slot already claimed for this workspace, just output and exit
 if [ -f "$WORKSPACE/.symphony_slot" ]; then
   EXISTING_DIR=$(grep '^DIRECTORY=' "$WORKSPACE/.symphony_slot" | cut -d= -f2)
-  if [ -n "$EXISTING_DIR" ] && [ -f "$EXISTING_DIR/.symphony.lock" ]; then
+  if [ -n "$EXISTING_DIR" ] && [ -f "$EXISTING_DIR/.git/symphony.lock" ]; then
     echo "Slot already claimed for this workspace"
     cat "$WORKSPACE/.symphony_slot"
     echo "STATUS=ready"
@@ -36,7 +36,7 @@ STALE_LOCK_MAX_AGE_SECONDS="${STALE_LOCK_MAX_AGE_SECONDS:-14400}"  # 4 hours
 
 for SLOT_NUM in 5 6 7 8; do
   SLOT_DIR="$HOME/Documents/Gearflow/${POOL_PREFIX}-${SLOT_NUM}"
-  LOCKFILE="$SLOT_DIR/.symphony.lock"
+  LOCKFILE="$SLOT_DIR/.git/symphony.lock"
   if [ -f "$LOCKFILE" ]; then
     LOCK_CONTENT=$(cat "$LOCKFILE")
     LOCK_WORKSPACE=$(echo "$LOCK_CONTENT" | grep -oE 'workspace=[^ ]+' | cut -d= -f2)
@@ -87,8 +87,11 @@ done
 AVAILABLE_SLOT=""
 for SLOT_NUM in 5 6 7 8; do
   SLOT_NAME="${POOL_PREFIX}-${SLOT_NUM}"
-  LOCKFILE="$HOME/Documents/Gearflow/${SLOT_NAME}/.symphony.lock"
-  if [ ! -f "$LOCKFILE" ]; then
+  LOCKFILE="$HOME/Documents/Gearflow/${SLOT_NAME}/.git/symphony.lock"
+  # Also honor a lock in the legacy work-tree location during the transition, so a
+  # new claim never steals a slot still held by an in-flight run under the old path.
+  OLD_LOCKFILE="$HOME/Documents/Gearflow/${SLOT_NAME}/.symphony.lock"
+  if [ ! -f "$LOCKFILE" ] && [ ! -f "$OLD_LOCKFILE" ]; then
     AVAILABLE_SLOT=$SLOT_NUM
     break
   fi
@@ -97,7 +100,7 @@ done
 if [ -z "$AVAILABLE_SLOT" ]; then
   echo "ERROR: No symphony ${POOL_PREFIX} slots available (slots 5-8 all locked)."
   for S in 5 6 7 8; do
-    LF="$HOME/Documents/Gearflow/${POOL_PREFIX}-${S}/.symphony.lock"
+    LF="$HOME/Documents/Gearflow/${POOL_PREFIX}-${S}/.git/symphony.lock"
     if [ -f "$LF" ]; then
       echo "  ${POOL_PREFIX}-${S}: LOCKED ($(cat "$LF"))"
     fi
@@ -174,8 +177,10 @@ fi
 git checkout -- . 2>/dev/null || true
 git clean -fd 2>/dev/null || true
 
-# Write lockfile (after git clean so it doesn't get removed)
-echo "workspace=$WORKSPACE branch=$BRANCH claimed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DIR/.symphony.lock"
+# Write lockfile inside .git/ — it lives outside the working tree, so the agent's
+# `git add .` can never commit it and it never blocks a `git checkout`/`reset`
+# (a committed/dirty .symphony.lock in the work tree aborts branch switches).
+echo "workspace=$WORKSPACE branch=$BRANCH claimed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$DIR/.git/symphony.lock"
 
 # Checkout branch
 git fetch origin --quiet

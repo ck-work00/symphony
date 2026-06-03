@@ -37,8 +37,8 @@ if [ -d "$DIR" ]; then
   git checkout main 2>/dev/null || true
   git reset --hard origin/main 2>/dev/null || true
 
-  # Remove lockfile and env override
-  rm -f "$DIR/.symphony.lock"
+  # Remove lockfile (new .git/ location + any leftover old work-tree copy) and env override
+  rm -f "$DIR/.git/symphony.lock" "$DIR/.symphony.lock"
   rm -f "$DIR/.env.symphony"
   echo "Git cleaned (was on branch: $BRANCH)"
 fi

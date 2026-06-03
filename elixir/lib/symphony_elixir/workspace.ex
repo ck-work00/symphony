@@ -145,7 +145,7 @@ defmodule SymphonyElixir.Workspace do
 
     for repo <- ["platform", "procurement"],
         slot <- 5..8 do
-      lock_path = Path.join([gearflow_dir, "#{repo}-#{slot}", ".symphony.lock"])
+      lock_path = Path.join([gearflow_dir, "#{repo}-#{slot}", ".git", "symphony.lock"])
 
       if File.exists?(lock_path) do
         case File.read(lock_path) do

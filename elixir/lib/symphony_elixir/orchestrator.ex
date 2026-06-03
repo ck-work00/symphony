@@ -232,6 +232,8 @@ defmodule SymphonyElixir.Orchestrator do
             updated_running_entry
           end
 
+        updated_running_entry = maybe_persist_run_progress(updated_running_entry)
+
         state =
           state
           |> apply_codex_token_delta(token_delta)
@@ -1551,6 +1553,35 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp record_session_completion_totals(state, _running_entry), do: state
+
+  # Persist the running token/turn/phase totals to the run row, throttled, so the
+  # DB reflects an in-flight run (single long turns otherwise only persist at
+  # completion) and the figures survive a restart. Returns the entry with an
+  # updated persist watermark.
+  @progress_persist_interval_ms 15_000
+  defp maybe_persist_run_progress(running_entry) do
+    run_id = Map.get(running_entry, :history_run_id)
+    last = Map.get(running_entry, :last_progress_persist_at)
+    now = System.monotonic_time(:millisecond)
+
+    if is_binary(run_id) and (last == nil or now - last >= @progress_persist_interval_ms) do
+      History.update_progress(run_id, %{
+        input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+        output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+        total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
+        turns_used: Map.get(running_entry, :turn_count, 0),
+        final_phase: Map.get(running_entry, :phase)
+      })
+
+      Map.put(running_entry, :last_progress_persist_at, now)
+    else
+      running_entry
+    end
+  rescue
+    error ->
+      Logger.warning("Failed to persist run progress: #{Exception.message(error)}")
+      running_entry
+  end
 
   defp record_completed_history(%State{} = state, running_entry, reason)
        when is_map(running_entry) do

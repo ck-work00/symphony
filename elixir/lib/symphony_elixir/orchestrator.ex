@@ -285,7 +285,7 @@ defmodule SymphonyElixir.Orchestrator do
         end
 
         # Terminate the agent
-        state = terminate_running_issue(state, issue_id, false)
+        state = terminate_running_issue(state, issue_id, false, :needs_help)
 
         notify_dashboard()
         {:noreply, state}
@@ -452,12 +452,12 @@ defmodule SymphonyElixir.Orchestrator do
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue moved to terminal state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, true)
+        terminate_running_issue(state, issue.id, true, :terminal_state)
 
       !issue_routable_to_worker?(issue) ->
         Logger.info("Issue no longer routed to this worker: #{issue_context(issue)} assignee=#{inspect(issue.assignee_id)}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, false, :not_routable)
 
       active_issue_state?(issue.state, active_states) ->
         refresh_running_issue_state(state, issue)
@@ -465,7 +465,7 @@ defmodule SymphonyElixir.Orchestrator do
       true ->
         Logger.info("Issue moved to non-active state: #{issue_context(issue)} state=#{issue.state}; stopping active agent")
 
-        terminate_running_issue(state, issue.id, false)
+        terminate_running_issue(state, issue.id, false, :non_active_state)
     end
   end
 
@@ -481,13 +481,14 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace) do
+  defp terminate_running_issue(%State{} = state, issue_id, cleanup_workspace, reason) do
     case Map.get(state.running, issue_id) do
       nil ->
         release_issue_claim(state, issue_id)
 
       %{pid: pid, ref: ref, identifier: identifier} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
+        {state, _eval_result} = record_completed_history(state, running_entry, {:terminated, reason})
 
         if cleanup_workspace do
           cleanup_issue_workspace(identifier)
@@ -565,7 +566,7 @@ defmodule SymphonyElixir.Orchestrator do
       next_attempt = next_retry_attempt_from_running(running_entry)
 
       state
-      |> terminate_running_issue(issue_id, false)
+      |> terminate_running_issue(issue_id, false, :stalled)
       |> schedule_issue_retry(issue_id, next_attempt, %{
         identifier: identifier,
         error: stall_reason
@@ -1303,9 +1304,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         state =
           state
-          |> terminate_running_issue(issue_id, false)
-          |> record_completed_history(running_entry, {:shutdown, :stopped})
-          |> record_session_completion_totals(running_entry)
+          |> terminate_running_issue(issue_id, false, :dashboard_stopped)
           |> complete_issue(issue_id)
 
         notify_dashboard()
@@ -1593,7 +1592,13 @@ defmodule SymphonyElixir.Orchestrator do
   defp record_completed_history(%State{} = state, running_entry, reason)
        when is_map(running_entry) do
     now = DateTime.utc_now()
-    outcome = if(reason == :normal, do: "completed", else: "failed")
+
+    outcome =
+      case reason do
+        :normal -> "completed"
+        {:terminated, _} -> "terminated"
+        _ -> "failed"
+      end
 
     error =
       case reason do
@@ -1719,6 +1724,27 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp categorize_error({:shutdown, :stopped}),
     do: %{message: "stopped via dashboard", category: "stopped"}
+
+  defp categorize_error({:terminated, :dashboard_stopped}),
+    do: %{message: "stopped via dashboard", category: "stopped"}
+
+  defp categorize_error({:terminated, :needs_help}),
+    do: %{message: "escalated for human review", category: "needs_human"}
+
+  defp categorize_error({:terminated, :terminal_state}),
+    do: %{message: "issue moved to terminal Linear state", category: "terminal_state"}
+
+  defp categorize_error({:terminated, :not_routable}),
+    do: %{message: "issue no longer routed to this worker", category: "not_routable"}
+
+  defp categorize_error({:terminated, :non_active_state}),
+    do: %{message: "issue moved to non-active Linear state", category: "non_active_state"}
+
+  defp categorize_error({:terminated, :stalled}),
+    do: %{message: "agent stalled with no activity", category: "stall"}
+
+  defp categorize_error({:terminated, reason}),
+    do: %{message: "terminated: #{inspect(reason)}", category: "terminated"}
 
   defp categorize_error(reason) do
     message = inspect(reason)

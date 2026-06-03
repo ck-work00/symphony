@@ -1565,15 +1565,22 @@ defmodule SymphonyElixir.Orchestrator do
     now = System.monotonic_time(:millisecond)
 
     if is_binary(run_id) and (last == nil or now - last >= @progress_persist_interval_ms) do
-      History.update_progress(run_id, %{
-        input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
-        output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
-        total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
-        turns_used: Map.get(running_entry, :turn_count, 0),
-        final_phase: Map.get(running_entry, :phase)
-      })
+      case History.update_progress(run_id, %{
+             input_tokens: Map.get(running_entry, :codex_input_tokens, 0),
+             output_tokens: Map.get(running_entry, :codex_output_tokens, 0),
+             total_tokens: Map.get(running_entry, :codex_total_tokens, 0),
+             turns_used: Map.get(running_entry, :turn_count, 0),
+             final_phase: Map.get(running_entry, :phase)
+           }) do
+        {:ok, _run} ->
+          # Only mark progress persisted on success, so a failed checkpoint isn't
+          # throttled away — the next tick retries it.
+          Map.put(running_entry, :last_progress_persist_at, now)
 
-      Map.put(running_entry, :last_progress_persist_at, now)
+        {:error, reason} ->
+          Logger.warning("Failed to persist run progress: #{inspect(reason)}")
+          running_entry
+      end
     else
       running_entry
     end

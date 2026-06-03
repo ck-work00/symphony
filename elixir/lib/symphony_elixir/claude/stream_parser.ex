@@ -22,10 +22,15 @@ defmodule SymphonyElixir.Claude.StreamParser do
 
   @doc """
   Extract session_id from a parsed event, if present.
+
+  `-p` stream-json events use `session_id`; interactive JSONL events use the
+  camelCase `sessionId`. Match both so the same parser works for either source.
   """
   @spec extract_session_id(map()) :: String.t() | nil
   def extract_session_id(%{"session_id" => id}) when is_binary(id), do: id
   def extract_session_id(%{session_id: id}) when is_binary(id), do: id
+  def extract_session_id(%{"sessionId" => id}) when is_binary(id), do: id
+  def extract_session_id(%{sessionId: id}) when is_binary(id), do: id
   def extract_session_id(_event), do: nil
 
   @doc """

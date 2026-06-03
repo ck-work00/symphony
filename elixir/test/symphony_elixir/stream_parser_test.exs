@@ -29,6 +29,20 @@ defmodule SymphonyElixir.Claude.StreamParserTest do
     Map.put(event, :event_type, :tool_result)
   end
 
+  describe "extract_session_id/1" do
+    test "matches snake_case session_id (stream-json)" do
+      assert StreamParser.extract_session_id(%{"session_id" => "snake"}) == "snake"
+    end
+
+    test "matches camelCase sessionId (interactive JSONL)" do
+      assert StreamParser.extract_session_id(%{"sessionId" => "camel"}) == "camel"
+    end
+
+    test "returns nil when absent" do
+      assert StreamParser.extract_session_id(%{"type" => "assistant"}) == nil
+    end
+  end
+
   describe "extract_phase/1" do
     test "extracts explicit phase header from assistant text" do
       event = assistant_text_event("### Phase 1: Investigate\n\nLet me look at the code...")

@@ -19,10 +19,13 @@ defmodule SymphonyElixir.Application do
 
   use Application
 
+  require Logger
+
   @impl true
   def start(_type, _args) do
     :ok = SymphonyElixir.LogFile.configure()
     :ok = SymphonyElixir.Repo.configure()
+    reap_orphan_tmux_sessions()
 
     children = [
       SymphonyElixir.Repo,
@@ -46,5 +49,16 @@ defmodule SymphonyElixir.Application do
   def stop(_state) do
     SymphonyElixir.StatusDashboard.render_offline_status()
     :ok
+  end
+
+  # Clean up tmux sessions leaked by a previous run that crashed before its
+  # AgentRunner could stop them. Never let this block or fail startup.
+  defp reap_orphan_tmux_sessions do
+    case SymphonyElixir.Claude.TmuxCLI.reap_orphan_sessions() do
+      [] -> :ok
+      reaped -> Logger.info("Reaped #{length(reaped)} orphaned Claude tmux session(s): #{inspect(reaped)}")
+    end
+  rescue
+    error -> Logger.warning("Orphan tmux session reap failed: #{Exception.message(error)}")
   end
 end

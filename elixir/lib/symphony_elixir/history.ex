@@ -32,6 +32,14 @@ defmodule SymphonyElixir.History do
     end
   end
 
+  @doc """
+  Persist a running run's in-progress totals (tokens, turns, phase) so the DB
+  reflects an in-flight run and the figures survive a restart. Same partial-update
+  mechanism as `record_completion/2`, just without the terminal fields.
+  """
+  @spec update_progress(String.t(), map()) :: {:ok, Run.t()} | {:error, term()}
+  def update_progress(run_id, attrs) when is_binary(run_id), do: record_completion(run_id, attrs)
+
   @spec record_evaluation(Run.t() | String.t(), map()) :: {:ok, Run.t()} | {:error, term()}
   def record_evaluation(%Run{} = run, attrs) do
     run
@@ -224,6 +232,24 @@ defmodule SymphonyElixir.History do
       nil -> 0
       n -> n
     end)
+  end
+
+  @doc """
+  Most-recent PR URL per issue identifier, from runs that recorded one. Used to
+  show an issue's open PR on the dashboard even on a run (running or completed)
+  that did not itself detect the URL.
+  """
+  @spec pr_urls_by_issue(keyword()) :: %{optional(String.t()) => String.t()}
+  def pr_urls_by_issue(opts \\ []) do
+    limit = Keyword.get(opts, :limit, 200)
+
+    Run
+    |> where([r], not is_nil(r.eval_pr_url) and not is_nil(r.issue_identifier))
+    |> order_by([r], desc: r.started_at)
+    |> limit(^limit)
+    |> select([r], {r.issue_identifier, r.eval_pr_url})
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn {identifier, url}, acc -> Map.put_new(acc, identifier, url) end)
   end
 
   @spec failure_breakdown(keyword()) :: [%{category: String.t(), count: integer()}]

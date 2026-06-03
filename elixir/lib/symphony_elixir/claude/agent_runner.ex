@@ -5,11 +5,18 @@ defmodule SymphonyElixir.Claude.AgentRunner do
   Drop-in replacement for `SymphonyElixir.AgentRunner` (which uses Codex).
   Same public interface: `run/3` with identical argument shapes and message
   protocol so the orchestrator can dispatch to either backend.
+
+  Each issue runs in one long-lived interactive Claude Code session hosted in a
+  tmux session (`Claude.TmuxCLI`). Prompts are delivered per turn and the
+  structured event stream is read from the session's JSONL file by
+  `Claude.SessionWatcher`, which also marks turn boundaries. This avoids
+  `claude -p`, which bills against Anthropic's programmatic credit pool.
   """
 
+  import Bitwise
+
   require Logger
-  alias SymphonyElixir.Claude.CLI, as: ClaudeCLI
-  alias SymphonyElixir.Claude.StreamParser
+  alias SymphonyElixir.Claude.{SessionWatcher, StreamParser, TmuxCLI}
   alias SymphonyElixir.{Config, Linear.Client, Linear.Issue, PromptBuilder, Tracker, Workspace}
 
   @spec run(map(), pid() | nil, keyword()) :: :ok | no_return()
@@ -46,9 +53,14 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
   # Emit updates in the same {:codex_worker_update, ...} format the orchestrator
   # expects, so we stay compatible without rewriting the orchestrator.
+  #
+  # Token usage IS attached per event: interactive Claude reports per-message usage
+  # whose normalized total grows with the (single, long-running) session context,
+  # and the orchestrator's monotonic delta accounting tracks that growing total —
+  # so the dashboard token count climbs live as the agent works, rather than only
+  # updating at turn boundaries (a run is usually one long turn under max_turns=0).
   defp send_claude_update(recipient, %Issue{id: issue_id}, event)
        when is_binary(issue_id) and is_pid(recipient) do
-    timestamp = DateTime.utc_now()
     session_id = StreamParser.extract_session_id(event)
     usage = StreamParser.extract_usage(event)
     event_type = Map.get(event, :event_type, :unknown)
@@ -58,7 +70,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
       {:codex_worker_update, issue_id,
        %{
          event: event_type,
-         timestamp: timestamp,
+         timestamp: DateTime.utc_now(),
          session_id: session_id,
          usage: usage,
          raw: event
@@ -69,6 +81,29 @@ defmodule SymphonyElixir.Claude.AgentRunner do
   end
 
   defp send_claude_update(_recipient, _issue, _event), do: :ok
+
+  # One update per completed turn, carrying only the turn number so the dashboard
+  # TURN counter advances (interactive JSONL has no `init` event to count turns
+  # from). Token usage rides on the per-event updates above, not here.
+  defp send_turn_completed(recipient, %Issue{id: issue_id}, turn)
+       when is_binary(issue_id) and is_pid(recipient) and is_integer(turn) do
+    send(
+      recipient,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :turn_completed,
+         turn: turn,
+         timestamp: DateTime.utc_now(),
+         session_id: nil,
+         usage: nil,
+         raw: %{}
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_turn_completed(_recipient, _issue, _turn), do: :ok
 
   defp send_phase_update(recipient, %Issue{id: issue_id}, phase)
        when is_pid(recipient) and is_atom(phase) do
@@ -98,64 +133,76 @@ defmodule SymphonyElixir.Claude.AgentRunner do
     comment_fetcher =
       Keyword.get(opts, :comment_fetcher, &Client.fetch_issue_comments/2)
 
-    do_run_claude_turns(
-      workspace,
-      issue,
-      claude_update_recipient,
-      opts,
-      issue_state_fetcher,
-      comment_fetcher,
-      1,
-      max_turns,
-      _session_id = nil,
-      _comments_after = DateTime.utc_now(),
-      _no_progress_count = 0
-    )
+    ctx = %{
+      workspace: workspace,
+      recipient: claude_update_recipient,
+      opts: opts,
+      issue_state_fetcher: issue_state_fetcher,
+      comment_fetcher: comment_fetcher,
+      max_turns: max_turns,
+      turn_timeout_ms: Keyword.get(opts, :turn_timeout_ms, Config.claude_turn_timeout_ms()),
+      # Collaborators are injectable so the turn loop can be tested without a live
+      # tmux session. Production uses the real modules.
+      session_mod: Keyword.get(opts, :session_module, TmuxCLI),
+      watcher_mod: Keyword.get(opts, :watcher_module, SessionWatcher)
+    }
+
+    session_id = uuid4()
+
+    case ctx.session_mod.start_session(workspace, session_id, opts) do
+      {:ok, session} ->
+        try do
+          run_session(ctx, issue, session, session_id)
+        after
+          ctx.session_mod.stop_session(session)
+        end
+
+      {:error, reason} ->
+        {:error, {:start_session_failed, reason}}
+    end
   end
 
-  defp do_run_claude_turns(
-         workspace,
-         issue,
-         claude_update_recipient,
-         opts,
-         issue_state_fetcher,
-         comment_fetcher,
-         turn_number,
-         max_turns,
-         session_id,
-         comments_after,
-         no_progress_count
-       ) do
-    comments = fetch_new_comments(issue, comment_fetcher, turn_number, comments_after)
-    prompt = build_turn_prompt(issue, opts, turn_number, max_turns, comments)
-
-    # Advance the watermark so the next turn only sees newer comments
+  # Send the first prompt (which makes Claude create the JSONL), then start the
+  # watcher on that file and drive the turn loop. The watcher reads from offset 0,
+  # so turn 1's events are not lost even though it starts after the first prompt.
+  defp run_session(ctx, issue, session, session_id) do
+    prompt = build_turn_prompt(issue, ctx.opts, 1, ctx.max_turns, [])
+    # Watermark for the next turn's comment fetch.
     turn_started_at = DateTime.utc_now()
 
-    cli_opts = [
-      on_event: claude_event_handler(claude_update_recipient, issue)
-    ]
-
-    result =
-      if session_id == nil do
-        ClaudeCLI.run(prompt, workspace, cli_opts)
-      else
-        ClaudeCLI.resume(session_id, prompt, workspace, cli_opts)
+    with :ok <- ctx.session_mod.send_prompt(session, prompt, 1),
+         {:ok, jsonl_path} <- ctx.session_mod.await_jsonl(session_id),
+         {:ok, watcher} <-
+           ctx.watcher_mod.start_link(
+             jsonl_path: jsonl_path,
+             on_event: claude_event_handler(ctx.recipient, issue)
+           ) do
+      try do
+        await_and_continue(ctx, issue, session, watcher, 1, turn_started_at, 0)
+      after
+        ctx.watcher_mod.stop(watcher)
       end
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
-    case result do
-      {:ok, %{session_id: new_session_id}} ->
-        effective_session_id = new_session_id || session_id
+  # Block until the turn already in flight completes, then run the between-turn
+  # checks and either stop or send the next prompt and recurse.
+  defp await_and_continue(ctx, issue, session, watcher, turn_number, comments_after, no_progress_count) do
+    case ctx.watcher_mod.wait_for_turn(watcher, ctx.turn_timeout_ms) do
+      {:ok, _turn_summary} ->
+        send_turn_completed(ctx.recipient, issue, turn_number)
 
         # Check workspace progress after each turn.
         # Skip no-progress counting on early turns — investigation and planning
         # produce no git changes but are essential work (reading code, posting to Linear).
-        progress = check_turn_progress(workspace)
+        progress = check_turn_progress(ctx.workspace)
         made_progress = progress.files_changed > 0 or progress.new_commits > 0 or turn_number <= 3
         next_no_progress = if made_progress, do: 0, else: no_progress_count + 1
 
         Logger.info(
-          "Completed Claude agent turn for #{issue_context(issue)} session_id=#{effective_session_id} workspace=#{workspace} turn=#{turn_number}/#{max_turns} progress=#{inspect(progress)} no_progress_count=#{next_no_progress}"
+          "Completed Claude agent turn for #{issue_context(issue)} workspace=#{ctx.workspace} turn=#{turn_number}/#{ctx.max_turns} progress=#{inspect(progress)} no_progress_count=#{next_no_progress}"
         )
 
         cond do
@@ -164,7 +211,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
           # has nothing to do" and prevents SYMPHONY_NEEDS_HELP loops.
           # Only consult the judge on no-progress turns so we don't interrupt
           # an agent that's actively addressing CR comments or other work.
-          turn_number > 1 and not made_progress and judge_says_done?(issue, workspace) ->
+          turn_number > 1 and not made_progress and judge_says_done?(issue, ctx.workspace) ->
             Logger.info("PhaseJudge: all phases complete and no progress for #{issue_context(issue)}; stopping")
             :ok
 
@@ -174,40 +221,57 @@ defmodule SymphonyElixir.Claude.AgentRunner do
             :ok
 
           true ->
-            case continue_with_issue?(issue, issue_state_fetcher) do
-              {:continue, refreshed_issue} when turn_number < max_turns ->
-                Logger.info("Continuing Claude agent run for #{issue_context(refreshed_issue)} turn=#{turn_number}/#{max_turns}")
-
-                do_run_claude_turns(
-                  workspace,
-                  refreshed_issue,
-                  claude_update_recipient,
-                  opts,
-                  issue_state_fetcher,
-                  comment_fetcher,
-                  turn_number + 1,
-                  max_turns,
-                  effective_session_id,
-                  turn_started_at,
-                  next_no_progress
-                )
-
-              {:continue, refreshed_issue} ->
-                Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active")
-
-                :ok
-
-              {:done, _refreshed_issue} ->
-                :ok
-
-              {:error, reason} ->
-                {:error, reason}
-            end
+            maybe_send_next_turn(ctx, issue, session, watcher, turn_number, comments_after, next_no_progress)
         end
+
+      {:error, reason} ->
+        Logger.error("Claude agent turn failed for #{issue_context(issue)} turn=#{turn_number}: #{inspect(reason)}")
+        {:error, {:turn_failed, reason}}
+    end
+  end
+
+  defp maybe_send_next_turn(ctx, issue, session, watcher, turn_number, comments_after, no_progress_count) do
+    case continue_with_issue?(issue, ctx.issue_state_fetcher) do
+      {:continue, refreshed_issue} when turn_number < ctx.max_turns ->
+        next_turn = turn_number + 1
+        Logger.info("Continuing Claude agent run for #{issue_context(refreshed_issue)} turn=#{turn_number}/#{ctx.max_turns}")
+
+        comments = fetch_new_comments(refreshed_issue, ctx.comment_fetcher, next_turn, comments_after)
+        prompt = build_turn_prompt(refreshed_issue, ctx.opts, next_turn, ctx.max_turns, comments)
+        # Advance the watermark so the next turn only sees newer comments.
+        turn_started_at = DateTime.utc_now()
+
+        case ctx.session_mod.send_prompt(session, prompt, next_turn) do
+          :ok ->
+            await_and_continue(ctx, refreshed_issue, session, watcher, next_turn, turn_started_at, no_progress_count)
+
+          {:error, reason} ->
+            {:error, {:send_prompt_failed, reason}}
+        end
+
+      {:continue, refreshed_issue} ->
+        Logger.info("Reached agent.max_turns for #{issue_context(refreshed_issue)} with issue still active")
+
+        :ok
+
+      {:done, _refreshed_issue} ->
+        :ok
 
       {:error, reason} ->
         {:error, reason}
     end
+  end
+
+  # RFC 4122 version-4 UUID. Claude Code's --session-id requires a valid UUID;
+  # this is also the JSONL filename we locate the session by.
+  defp uuid4 do
+    <<a::32, b::16, c::16, d::16, e::48>> = :crypto.strong_rand_bytes(16)
+    c = c |> band(0x0FFF) |> bor(0x4000)
+    d = d |> band(0x3FFF) |> bor(0x8000)
+
+    "~8.16.0b-~4.16.0b-~4.16.0b-~4.16.0b-~12.16.0b"
+    |> :io_lib.format([a, b, c, d, e])
+    |> IO.iodata_to_binary()
   end
 
   defp build_turn_prompt(issue, opts, 1, _max_turns, _comments) do
@@ -318,8 +382,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
         branch = String.trim(branch_output)
 
         if branch != "" and branch != "main" do
-          case System.cmd("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"],
-                 cd: workspace, stderr_to_stdout: true) do
+          case System.cmd("gh", ["pr", "list", "--head", branch, "--state", "open", "--json", "url", "--jq", ".[0].url"], cd: workspace, stderr_to_stdout: true) do
             {output, 0} ->
               url = String.trim(output)
               if url != "" and String.starts_with?(url, "http"), do: url, else: nil

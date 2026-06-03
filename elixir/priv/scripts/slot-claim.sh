@@ -31,6 +31,9 @@ fi
 # 1. Locks matching this workspace or branch (re-claim for same issue)
 # 2. Self-referential locks (workspace=<same-slot-dir>, always stale)
 # 3. Locks whose workspace directory no longer exists
+# 4. Locks older than STALE_LOCK_MAX_AGE_SECONDS with no Phoenix listening on the slot's port
+STALE_LOCK_MAX_AGE_SECONDS="${STALE_LOCK_MAX_AGE_SECONDS:-14400}"  # 4 hours
+
 for SLOT_NUM in 5 6 7 8; do
   SLOT_DIR="$HOME/Documents/Gearflow/${POOL_PREFIX}-${SLOT_NUM}"
   LOCKFILE="$SLOT_DIR/.symphony.lock"
@@ -46,11 +49,36 @@ for SLOT_NUM in 5 6 7 8; do
       STALE_REASON="self-referential (workspace=slot dir)"
     elif [ -n "$LOCK_WORKSPACE" ] && [ ! -d "$LOCK_WORKSPACE" ]; then
       STALE_REASON="workspace directory $LOCK_WORKSPACE no longer exists"
+    else
+      CLAIMED_AT=$(echo "$LOCK_CONTENT" | grep -oE 'claimed_at=[^ ]+' | cut -d= -f2)
+      if [ -n "$CLAIMED_AT" ]; then
+        # Parse ISO 8601 UTC — try macOS form (-u to treat input as UTC), then GNU
+        LOCK_EPOCH=$(date -ju -f "%Y-%m-%dT%H:%M:%SZ" "$CLAIMED_AT" +%s 2>/dev/null \
+                  || date -u -d "$CLAIMED_AT" +%s 2>/dev/null \
+                  || echo "")
+        if [ -n "$LOCK_EPOCH" ]; then
+          AGE=$(( $(date +%s) - LOCK_EPOCH ))
+          if [ "$AGE" -gt "$STALE_LOCK_MAX_AGE_SECONDS" ]; then
+            if [ "$POOL_PREFIX" = "platform" ]; then
+              SLOT_PORT=$((3004 + SLOT_NUM))
+            else
+              SLOT_PORT=$((3008 + SLOT_NUM))
+            fi
+            if ! lsof -i :"$SLOT_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
+              STALE_REASON="lock is $((AGE / 3600))h old and no Phoenix on port $SLOT_PORT"
+            fi
+          fi
+        fi
+      fi
     fi
 
     if [ -n "$STALE_REASON" ]; then
       echo "Releasing stale lock for ${POOL_PREFIX}-${SLOT_NUM}: $STALE_REASON"
       rm -f "$LOCKFILE"
+      # Clear the workspace marker too so the abandoned workspace can be reclaimed cleanly
+      if [ -n "$LOCK_WORKSPACE" ] && [ -f "$LOCK_WORKSPACE/.symphony_slot" ]; then
+        rm -f "$LOCK_WORKSPACE/.symphony_slot"
+      fi
     fi
   fi
 done
@@ -125,9 +153,14 @@ if ! lsof -i :"$POSTGRES_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
   exit 1
 fi
 
-# Check if backend is already healthy on our port — skip heavy setup if so
+# Check if backend is already healthy on our port — skip heavy setup if so.
+# gf_platform's main_proxy routes by Host, so the health check must send the
+# gearflow host (mapped to 127.0.0.1 in /etc/hosts) or it gets "No backends
+# matched". Procurement does not host-route, so it keeps localhost.
 BACKEND_HEALTHY=false
-if curl -sf "http://localhost:$PHOENIX_PORT/gql" -H "Content-Type: application/json" \
+HEALTH_HOST="localhost"
+[ "$POOL_PREFIX" = "platform" ] && HEALTH_HOST="local.gearflow.com"
+if curl -sf "http://localhost:$PHOENIX_PORT/gql" -H "Host: $HEALTH_HOST" -H "Content-Type: application/json" \
    -d '{"query":"{ __typename }"}' 2>/dev/null | grep -q data; then
   BACKEND_HEALTHY=true
 fi
@@ -162,13 +195,22 @@ fi
 direnv exec . mix deps.get --quiet 2>&1 | tail -5
 direnv exec . mix ecto.migrate --quiet 2>&1 | tail -5 || true
 
-# Write port overrides (both .env for devenv and .env.symphony for reference)
+# Write port overrides (both .env for devenv and .env.symphony for reference).
+# gf_platform's devenv reads MAIN_PROXY_PORT / VITE_PORT; gf_procurement reads
+# PHOENIX_PORT / FRONTEND_PORT. Emit both names on platform so the backend binds
+# our slot's port instead of the default 4000.
 cat > .env <<EOF
 export PHOENIX_PORT=$PHOENIX_PORT
 export FRONTEND_PORT=$FRONTEND_PORT
 export DATABASE_NAME=$DATABASE_NAME
 export POSTGRES_PORT=$POSTGRES_PORT
 EOF
+if [ "$POOL_PREFIX" = "platform" ]; then
+  cat >> .env <<EOF
+export MAIN_PROXY_PORT=$PHOENIX_PORT
+export VITE_PORT=$FRONTEND_PORT
+EOF
+fi
 cp .env .env.symphony
 
 # Ensure .envrc exists so direnv exec . activates devenv and loads .env

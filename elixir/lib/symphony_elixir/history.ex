@@ -32,6 +32,14 @@ defmodule SymphonyElixir.History do
     end
   end
 
+  @doc """
+  Persist a running run's in-progress totals (tokens, turns, phase) so the DB
+  reflects an in-flight run and the figures survive a restart. Same partial-update
+  mechanism as `record_completion/2`, just without the terminal fields.
+  """
+  @spec update_progress(String.t(), map()) :: {:ok, Run.t()} | {:error, term()}
+  def update_progress(run_id, attrs) when is_binary(run_id), do: record_completion(run_id, attrs)
+
   @spec record_evaluation(Run.t() | String.t(), map()) :: {:ok, Run.t()} | {:error, term()}
   def record_evaluation(%Run{} = run, attrs) do
     run

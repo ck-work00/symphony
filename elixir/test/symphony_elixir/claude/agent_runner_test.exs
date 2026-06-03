@@ -137,7 +137,7 @@ defmodule SymphonyElixir.Claude.AgentRunnerTest do
     assert_received :stopped
   end
 
-  test "emits a :turn_completed update per turn with the turn number and cumulative usage" do
+  test "emits a :turn_completed update carrying the turn number for the TURN counter" do
     opts =
       base_opts(
         max_turns: 3,
@@ -146,10 +146,10 @@ defmodule SymphonyElixir.Claude.AgentRunnerTest do
 
     assert :ok = AgentRunner.run(issue("In Progress"), self(), opts)
 
-    completed =
+    turns =
       Stream.repeatedly(fn ->
         receive do
-          {:codex_worker_update, _id, %{event: :turn_completed} = u} -> {u.turn, u.usage.total_tokens}
+          {:codex_worker_update, _id, %{event: :turn_completed} = u} -> {u.turn, u.usage}
           {:codex_worker_update, _id, _other} -> :skip
         after
           0 -> :done
@@ -158,8 +158,9 @@ defmodule SymphonyElixir.Claude.AgentRunnerTest do
       |> Enum.take_while(&(&1 != :done))
       |> Enum.reject(&(&1 == :skip))
 
-    # Three turns, cumulative total grows by 12 each turn.
-    assert completed == [{1, 12}, {2, 24}, {3, 36}]
+    # One :turn_completed per turn carrying the turn number; token usage rides on
+    # the per-event updates instead (so the dashboard climbs live mid-turn).
+    assert turns == [{1, nil}, {2, nil}, {3, nil}]
   end
 
   test "raises and stops the session when start_session fails" do

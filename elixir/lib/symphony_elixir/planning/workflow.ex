@@ -1,15 +1,14 @@
 defmodule SymphonyElixir.Planning.Workflow do
   @moduledoc """
-  Plan-driven dispatch state machine.
-
-  Replaces the artifact-based `PhaseJudge` for the Implement phase. Owns
-  the lifecycle:
+  Plan-driven dispatch state machine — the sole dispatch authority (there is no
+  phase judge). Owns the lifecycle:
 
       planning → dispatching → grading → (done | redispatching → dispatching)
 
-  Test, Share Evidence, and Simplify phases still go through `PhaseJudge`
-  in the experiment branch; this module is concerned with the
-  plan/grade/redispatch loop on top of Implement.
+  The orchestrator generates a plan from the issue, dispatches a row-closer for
+  the open rows, grades the result, and repeats. Once the code rows are done it
+  dispatches the Test tester sub-agent; a clean tester report finishes the issue,
+  a REQUEST_CHANGES reopens rows for another Implement pass.
 
   Phase A scope (no fanout): a single worker dispatch closes all open rows
   on each pass. Phase B will partition rows across N workers.

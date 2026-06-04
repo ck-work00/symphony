@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{Config, Evaluator, History, Notifier, PhaseJudge, StatusDashboard, Suitability, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Evaluator, History, Notifier, StatusDashboard, Suitability, Tracker, Workspace}
   alias SymphonyElixir.Claude.StreamParser
   alias SymphonyElixir.Linear.Issue
 
@@ -136,7 +136,7 @@ defmodule SymphonyElixir.Orchestrator do
       issue_id ->
         {running_entry, state} = pop_running_entry(state, issue_id)
         state = record_session_completion_totals(state, running_entry)
-        {state, eval_result} = record_completed_history(state, running_entry, reason)
+        {state, _eval_result} = record_completed_history(state, running_entry, reason)
         session_id = running_entry_session_id(running_entry)
 
         # Grade the plan dispatch (if any) BEFORE releasing the slot — the
@@ -156,41 +156,25 @@ defmodule SymphonyElixir.Orchestrator do
             :normal ->
               continuation_count = Map.get(running_entry, :continuation_count, 0) + 1
 
-              case PhaseJudge.assess(running_entry, eval_result) do
-                :done ->
-                  score = if eval_result, do: Map.get(eval_result, :score), else: nil
-                  Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; PhaseJudge says done, eval score #{score || "n/a"}")
-                  complete_issue(state, issue_id)
+              if continuation_count > @max_continuations do
+                Logger.warning("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), completing")
 
-                :max_runs_reached ->
-                  Logger.warning("Agent task for issue_id=#{issue_id} reached max total runs, stopping")
-                  complete_issue(state, issue_id)
+                complete_issue(state, issue_id)
+              else
+                # The plan is the sole authority. The dispatch this run produced was
+                # already graded above (row states are fresh). Schedule a continuation
+                # that re-assesses the plan on the next dispatch — plan_action/2 then
+                # decides whether to dispatch the remaining open rows (Implement),
+                # dispatch the tester (Test), finish the issue, or block it.
+                Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling plan continuation #{continuation_count}/#{@max_continuations}")
 
-                {:retask, missing_phases, completed_phases} ->
-                  if continuation_count > @max_continuations do
-                    Logger.warning(
-                      "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; reached max continuations (#{@max_continuations}), not re-dispatching (missing: #{inspect(missing_phases)})"
-                    )
-
-                    complete_issue(state, issue_id)
-                  else
-                    # Dispatch only the first missing phase
-                    [next_phase | _] = missing_phases
-
-                    Logger.info(
-                      "Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; dispatching phase: #{next_phase} (missing: #{inspect(missing_phases)}, #{continuation_count}/#{@max_continuations})"
-                    )
-
-                    state
-                    |> complete_issue(issue_id)
-                    |> schedule_issue_retry(issue_id, continuation_count, %{
-                      identifier: running_entry.identifier,
-                      delay_type: :continuation,
-                      continuation_count: continuation_count,
-                      retask_phases: [next_phase],
-                      completed_phases: completed_phases
-                    })
-                  end
+                state
+                |> complete_issue(issue_id)
+                |> schedule_issue_retry(issue_id, continuation_count, %{
+                  identifier: running_entry.identifier,
+                  delay_type: :continuation,
+                  continuation_count: continuation_count
+                })
               end
 
             _ ->
@@ -773,59 +757,17 @@ defmodule SymphonyElixir.Orchestrator do
   defp dispatch_issue(%State{} = state, issue, attempt \\ nil, metadata \\ %{}) do
     case revalidate_issue_for_dispatch(issue, &Tracker.fetch_issue_states_by_ids/1, terminal_state_set()) do
       {:ok, %Issue{} = refreshed_issue} ->
-        # If this is already a retask continuation, dispatch directly
-        if metadata[:retask_phases] do
-          do_dispatch_issue(state, refreshed_issue, attempt, metadata)
-        else
-          # Check for existing PR and let the judge decide
-          {pr_url, pr_branch} =
-            case check_existing_pr(refreshed_issue) do
-              {:pr_exists, url, branch} -> {url, branch}
-              :no_pr -> {nil, nil}
-            end
-
-          # Pass existing PR info to the agent so it works on the right branch
-          pr_metadata = %{existing_pr_url: pr_url, existing_pr_branch: pr_branch}
-
-          case PhaseJudge.pre_dispatch_assess(refreshed_issue, pr_url) do
-            :fresh ->
-              # Fresh issue — dispatch Investigate phase
-              fresh_metadata =
-                Map.merge(
-                  metadata,
-                  Map.merge(pr_metadata, %{
-                    retask_phases: ["Investigate"],
-                    completed_phases: []
-                  })
-                )
-
-              do_dispatch_issue(state, refreshed_issue, attempt, fresh_metadata)
-
-            :done ->
-              Logger.info("PhaseJudge: all phases complete for #{issue_context(refreshed_issue)}, skipping dispatch")
-              complete_issue(state, refreshed_issue.id)
-
-            :max_runs_reached ->
-              Logger.warning("PhaseJudge: max runs reached for #{issue_context(refreshed_issue)}, not dispatching")
-              complete_issue(state, refreshed_issue.id)
-
-            {:retask, missing_phases, completed_phases} ->
-              # Dispatch only the first missing phase
-              [next_phase | _] = missing_phases
-              Logger.info("PhaseJudge: dispatching #{issue_context(refreshed_issue)} for phase: #{next_phase} (missing: #{inspect(missing_phases)})")
-
-              retask_metadata =
-                Map.merge(
-                  metadata,
-                  Map.merge(pr_metadata, %{
-                    retask_phases: [next_phase],
-                    completed_phases: completed_phases
-                  })
-                )
-
-              do_dispatch_issue(state, refreshed_issue, attempt, retask_metadata)
+        # Find the issue's open PR (if any) so the plan workflow assesses against
+        # the right branch, and the worker checks it out. The plan — not a phase
+        # judge — decides what to dispatch; that happens in do_dispatch_issue.
+        {pr_url, pr_branch} =
+          case check_existing_pr(refreshed_issue) do
+            {:pr_exists, url, branch} -> {url, branch}
+            :no_pr -> {nil, nil}
           end
-        end
+
+        pr_metadata = %{existing_pr_url: pr_url, existing_pr_branch: pr_branch}
+        do_dispatch_issue(state, refreshed_issue, attempt, Map.merge(metadata, pr_metadata))
 
       {:skip, :missing} ->
         Logger.info("Skipping dispatch; issue no longer active or visible: #{issue_context(issue)}")
@@ -847,15 +789,27 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp do_dispatch_issue(%State{} = state, issue, attempt, metadata) do
+    # The plan is the sole dispatch authority. plan_action/2 generates the plan
+    # on an issue's first dispatch (one LLM call) and reuses it after, then says
+    # whether to dispatch a worker (Implement row-closer or Test tester), finish
+    # the issue, or block it for a human.
+    case plan_action(issue, metadata) do
+      {:dispatch, metadata} ->
+        spawn_worker(state, issue, attempt, metadata)
+
+      :done ->
+        Logger.info("Plan complete and tester-approved for #{issue_context(issue)}; completing issue")
+        complete_issue(state, issue.id)
+
+      {:blocked, reason} ->
+        block_issue_for_plan_failure(state, issue, reason)
+    end
+  end
+
+  defp spawn_worker(%State{} = state, issue, attempt, metadata) do
     recipient = self()
 
     runner = Config.agent_runner_module()
-
-    # For every dispatch, ask the Planning workflow for a row assignment.
-    # Generates the plan on the first dispatch of an issue (one LLM call) and
-    # reuses it afterward; may override the phase to Implement with assigned
-    # rows when the plan still has open rows.
-    metadata = maybe_attach_plan_assignment(issue, metadata)
 
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            runner.run(issue, recipient,
@@ -943,120 +897,136 @@ defmodule SymphonyElixir.Orchestrator do
 
   # --- Planning integration --------------------------------------------------
   #
-  # The Plan is the authority on Implement-phase state — not PhaseJudge's
-  # "PR exists = Implement done" heuristic. Before EVERY dispatch (regardless
-  # of which phase PhaseJudge picked), assess the plan:
+  # The plan is the sole dispatch authority — there is no phase judge. Every
+  # dispatch runs plan_action/2, which generates the plan on an issue's first
+  # dispatch and reuses it after, then decides:
   #
-  #   * Plan has open rows → override metadata to dispatch Implement, attach
-  #     the assigned rows, create a Dispatch record. PhaseJudge's phase
-  #     decision is ignored. This is the load-bearing fix for "PR exists,
-  #     contract incomplete" issues.
-  #   * Plan complete → leave metadata alone. PhaseJudge governs Test /
-  #     Share Evidence / Simplify.
-  #   * Plan generation failed → fall back to PhaseJudge.
-  defp maybe_attach_plan_assignment(issue, metadata) do
-    assess_opts = [pr_url: metadata[:existing_pr_url]]
-
-    case SymphonyElixir.Planning.Workflow.assess(issue, assess_opts) do
+  #   * Plan has open rows → dispatch an Implement row-closer for them, record a
+  #     Dispatch (so completion can grade it).
+  #   * Plan code rows all done → consult the tester:
+  #       - never tested / code changed since the last report → dispatch the Test
+  #         tester sub-agent.
+  #       - fresh tester REQUEST_CHANGES → reopen the done rows and dispatch an
+  #         Implement row-closer to address the gaps (the tester can't edit code).
+  #       - fresh tester APPROVE → the issue is done.
+  #   * Plan generation failed → block the issue and notify a human.
+  #
+  # Returns {:dispatch, metadata} | :done | {:blocked, reason}.
+  defp plan_action(issue, metadata) do
+    case SymphonyElixir.Planning.Workflow.assess(issue, pr_url: metadata[:existing_pr_url]) do
       {:ok, {:has_open_rows, plan, rows}} ->
-        case SymphonyElixir.Planning.Workflow.start_implement_dispatch(plan, rows) do
-          {:ok, dispatch} ->
-            Logger.info("Plan has #{length(rows)} open rows for #{issue.identifier}; dispatching Implement (overriding any prior phase decision)")
-
-            metadata
-            |> Map.put(:retask_phases, ["Implement"])
-            |> Map.put(:assigned_rows, rows)
-            |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
-            |> Map.put(:plan_dispatch_id, dispatch.id)
-
-          {:error, reason} ->
-            Logger.warning("Failed to record plan dispatch for #{issue.identifier}: #{inspect(reason)}; falling back to PhaseJudge")
-
-            metadata
-        end
+        dispatch_implement(issue, metadata, plan, rows, "#{length(rows)} open rows")
 
       {:ok, {:complete, plan}} ->
-        # Plan rows all done — but if the Tester left a fresh REQUEST_CHANGES
-        # report (newer than the last Implement dispatch), the loop is
-        # otherwise stuck Test→Test→Test because the tester sub-agent is
-        # forbidden from modifying code. Flip all done rows to partial and
-        # force a fresh Implement dispatch so the worker addresses the
-        # tester's gaps. The Grader on next DOWN re-verifies, snapping
-        # untouched rows back to done.
-        case fresh_tester_request_changes?(issue, plan) do
+        case tester_gate(issue, plan) do
+          :approved ->
+            :done
+
+          :needs_test ->
+            Logger.info("Plan code rows complete for #{issue.identifier}; dispatching the Test tester sub-agent")
+            {:dispatch, Map.put(metadata, :retask_phases, ["Test"])}
+
           {:request_changes, reason} ->
-            with {:ok, reopened} <- reopen_done_rows(plan, reason),
-                 open <- SymphonyElixir.Planning.Plan.open_rows(reopened),
-                 {:ok, dispatch} <-
-                   SymphonyElixir.Planning.Workflow.start_implement_dispatch(reopened, open) do
-              Logger.info("Tester REQUEST_CHANGES on #{issue.identifier}; reopening #{length(open)} done rows and dispatching Implement to address gaps")
+            # The tester found gaps but can't edit code. Reopen the done rows and
+            # dispatch an Implement row-closer; the Grader re-verifies on the next
+            # completion, snapping untouched rows back to done.
+            case reopen_done_rows(plan, reason) do
+              {:ok, reopened} ->
+                open = SymphonyElixir.Planning.Plan.open_rows(reopened)
+                dispatch_implement(issue, metadata, reopened, open, "tester REQUEST_CHANGES")
 
-              metadata
-              |> Map.put(:retask_phases, ["Implement"])
-              |> Map.put(:assigned_rows, open)
-              |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(reopened))
-              |> Map.put(:plan_dispatch_id, dispatch.id)
-            else
-              err ->
-                Logger.warning("Failed to reopen rows for tester REQUEST_CHANGES on #{issue.identifier}: #{inspect(err)}; falling back to PhaseJudge")
-
-                metadata
+              {:error, err} ->
+                {:blocked, {:reopen_rows_failed, err}}
             end
-
-          _ ->
-            Logger.info("Plan complete for #{issue.identifier}; deferring to PhaseJudge for next phase")
-
-            metadata
         end
 
       {:error, reason} ->
-        Logger.warning("Plan assess failed for #{issue.identifier}: #{inspect(reason)}; falling back to PhaseJudge")
-
-        metadata
+        {:blocked, {:plan_assess_failed, reason}}
     end
   rescue
     error ->
-      Logger.error("maybe_attach_plan_assignment crashed for #{issue.identifier}: #{Exception.message(error)}")
-
-      metadata
+      {:blocked, {:plan_action_crashed, Exception.message(error)}}
   end
 
-  # When the Tester sub-agent posts `## Tester Report` with
-  # `Recommendation: REQUEST_CHANGES` AFTER the most recent successful
-  # Implement dispatch, that's a signal the work has gaps but the tester
-  # can't close them itself. PhaseJudge keeps re-dispatching Test in this
-  # case (because Test stays missing without APPROVE), creating an infinite
-  # loop. We detect this here and force the next dispatch to Implement.
-  defp fresh_tester_request_changes?(issue, plan) do
-    issue_id = Map.get(issue, :id)
+  # Record a Dispatch and build the metadata for an Implement row-closer dispatch.
+  defp dispatch_implement(issue, metadata, plan, rows, why) do
+    case SymphonyElixir.Planning.Workflow.start_implement_dispatch(plan, rows) do
+      {:ok, dispatch} ->
+        Logger.info("Dispatching Implement row-closer for #{issue.identifier} (#{why}, #{length(rows)} rows)")
 
-    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
+        metadata =
+          metadata
+          |> Map.put(:retask_phases, ["Implement"])
+          |> Map.put(:assigned_rows, rows)
+          |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
+          |> Map.put(:plan_dispatch_id, dispatch.id)
+
+        {:dispatch, metadata}
+
+      {:error, reason} ->
+        {:blocked, {:dispatch_record_failed, reason}}
+    end
+  end
+
+  # Decide what the tester says about the current (code-complete) plan:
+  #   :needs_test            — no tester report yet, or the latest one predates
+  #                            the last Implement dispatch (code changed since).
+  #   {:request_changes, _}  — fresh report that isn't a clean APPROVE.
+  #   :approved              — fresh report that cleanly approves.
+  # On a Linear fetch failure we return :needs_test so the tester runs again
+  # rather than declaring the issue done on missing evidence; the continuation
+  # cap bounds any loop.
+  defp tester_gate(issue, plan) do
+    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(Map.get(issue, :id)) do
       {:ok, comments} ->
-        latest_report = latest_tester_report(comments)
-        last_implement_finish = last_implement_dispatch_finish(plan)
+        latest = latest_tester_report(comments)
+        last_implement = last_implement_dispatch_finish(plan)
 
         cond do
-          is_nil(latest_report) ->
-            :no_report
+          is_nil(latest) ->
+            :needs_test
 
-          not request_changes?(latest_report.body) ->
-            :report_not_request_changes
+          not is_nil(last_implement) and DateTime.compare(latest.created_at, last_implement) != :gt ->
+            :needs_test
 
-          is_nil(last_implement_finish) ->
-            {:request_changes, "tester REQUEST_CHANGES (no prior Implement dispatch)"}
-
-          DateTime.compare(latest_report.created_at, last_implement_finish) == :gt ->
-            {:request_changes, "tester REQUEST_CHANGES at #{DateTime.to_iso8601(latest_report.created_at)} (newer than last Implement at #{DateTime.to_iso8601(last_implement_finish)})"}
+          request_changes?(latest.body) ->
+            {:request_changes, "tester REQUEST_CHANGES at #{DateTime.to_iso8601(latest.created_at)}"}
 
           true ->
-            :report_stale
+            :approved
         end
 
       _ ->
-        :linear_fetch_failed
+        :needs_test
     end
   rescue
-    _ -> :crash
+    _ -> :needs_test
+  end
+
+  # Plan generation/advancement failed and there is no phase-judge fallback.
+  # Notify a human, move the issue to the configured review state, and stop
+  # dispatching it. A human re-activating the issue re-enters the loop fresh.
+  defp block_issue_for_plan_failure(%State{} = state, issue, reason) do
+    Logger.error("Plan workflow blocked for #{issue_context(issue)}: #{inspect(reason)}; notifying human")
+
+    message = "Symphony could not produce or advance a plan: #{inspect(reason)}"
+
+    Notifier.notify(:needs_human, %{
+      issue_id: issue.id,
+      identifier: issue.identifier,
+      help_message: message
+    })
+
+    needs_human_state = Config.escalation_needs_human_state()
+
+    if is_binary(needs_human_state) do
+      case Tracker.update_issue_state(issue.id, needs_human_state) do
+        :ok -> Logger.info("Moved blocked issue #{issue.identifier} to state '#{needs_human_state}'")
+        {:error, reason} -> Logger.warning("Failed to move blocked issue #{issue.identifier}: #{inspect(reason)}")
+      end
+    end
+
+    complete_issue(state, issue.id)
   end
 
   defp latest_tester_report(comments) do
@@ -1127,10 +1097,9 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   # After a plan-driven worker dispatch finishes, grade its diff against the
-  # rows it was assigned. Updates the plan in SQLite; the verdict isn't used
-  # to drive the next dispatch decision directly — PhaseJudge still does that
-  # — but the updated row states feed into the NEXT call to
-  # `Workflow.assess` so re-dispatches get a refreshed assignment.
+  # rows it was assigned. Updates the plan in SQLite; the refreshed row states
+  # feed the NEXT call to `plan_action/2`, which decides whether to re-dispatch
+  # the still-open rows, run the tester, finish, or block.
   defp maybe_grade_plan_dispatch(running_entry) do
     case running_entry[:plan_dispatch_id] do
       nil ->
@@ -1740,7 +1709,7 @@ defmodule SymphonyElixir.Orchestrator do
     # Release any lingering pool slot so the fresh dispatch can claim one
     Task.start(fn -> Workspace.release_pool_slot_for_issue(issue.identifier) end)
 
-    # Clear all run history so the PhaseJudge doesn't block dispatch
+    # Clear this issue's run history so the forced re-dispatch starts clean
     History.delete_all_runs(issue.identifier)
 
     # Clear in-memory tracking so should_dispatch_issue? passes

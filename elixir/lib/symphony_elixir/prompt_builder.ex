@@ -21,7 +21,9 @@ defmodule SymphonyElixir.PromptBuilder do
         "attempt" => Keyword.get(opts, :attempt),
         "issue" => issue |> Map.from_struct() |> to_solid_map(),
         "existing_pr_url" => Keyword.get(opts, :existing_pr_url),
-        "existing_pr_branch" => Keyword.get(opts, :existing_pr_branch)
+        "existing_pr_branch" => Keyword.get(opts, :existing_pr_branch),
+        "assigned_rows_md" => render_rows_md(Keyword.get(opts, :assigned_rows)),
+        "plan_rows_md" => render_rows_md(Keyword.get(opts, :plan_rows))
       },
       @render_opts
     )
@@ -38,43 +40,75 @@ defmodule SymphonyElixir.PromptBuilder do
     stages_dir = Workflow.stages_directory()
     stages = StageLoader.load_stages(stages_dir)
 
-    # Render the preamble through Solid for issue context
-    preamble_raw = Map.get(stages, "_preamble.md", "")
+    issue_map = issue |> Map.from_struct() |> to_solid_map()
+    assigned_rows_md = render_rows_md(Keyword.get(opts, :assigned_rows))
+    plan_rows_md = render_rows_md(Keyword.get(opts, :plan_rows))
 
+    template_vars = %{
+      "attempt" => Keyword.get(opts, :attempt),
+      "issue" => issue_map,
+      "existing_pr_url" => Keyword.get(opts, :existing_pr_url),
+      "existing_pr_branch" => Keyword.get(opts, :existing_pr_branch),
+      "assigned_rows_md" => assigned_rows_md,
+      "plan_rows_md" => plan_rows_md
+    }
+
+    # Render the preamble through Solid for issue context
     preamble =
-      preamble_raw
-      |> Solid.parse!()
-      |> Solid.render!(
-        %{
-          "attempt" => Keyword.get(opts, :attempt),
-          "issue" => issue |> Map.from_struct() |> to_solid_map(),
-          "existing_pr_url" => Keyword.get(opts, :existing_pr_url),
-          "existing_pr_branch" => Keyword.get(opts, :existing_pr_branch)
-        },
-        @render_opts
-      )
-      |> IO.iodata_to_binary()
+      stages
+      |> Map.get("_preamble.md", "")
+      |> render_solid(template_vars)
 
     # Get this phase's instructions
-    phase_content = StageLoader.phase_content(stages, phase_name)
-
     phase_md =
-      if phase_content do
-        # Render any Solid template variables in the phase content
-        phase_content
-        |> Solid.parse!()
-        |> Solid.render!(
-          %{"issue" => issue |> Map.from_struct() |> to_solid_map()},
-          @render_opts
-        )
-        |> IO.iodata_to_binary()
-      else
-        "Complete the #{phase_name} phase."
+      case StageLoader.phase_content(stages, phase_name) do
+        nil -> "Complete the #{phase_name} phase."
+        content -> render_solid(content, template_vars)
       end
 
     [preamble, "---", phase_md]
     |> Enum.join("\n\n")
     |> String.trim()
+  end
+
+  defp render_solid("", _vars), do: ""
+
+  defp render_solid(template, vars) do
+    template
+    |> Solid.parse!()
+    |> Solid.render!(vars, @render_opts)
+    |> IO.iodata_to_binary()
+  end
+
+  defp render_rows_md(nil), do: ""
+  defp render_rows_md([]), do: ""
+
+  defp render_rows_md(rows) when is_list(rows) do
+    Enum.map_join(rows, "\n\n", fn row ->
+      id = Map.get(row, "id") || Map.get(row, :id) || "?"
+      desc = Map.get(row, "description") || Map.get(row, :description) || ""
+      touches = Map.get(row, "touches") || Map.get(row, :touches) || []
+      tests = Map.get(row, "tests") || Map.get(row, :tests) || []
+      deps = Map.get(row, "depends_on") || Map.get(row, :depends_on) || []
+      state = Map.get(row, "state") || Map.get(row, :state) || "missing"
+      rationale = Map.get(row, "rationale") || Map.get(row, :rationale)
+
+      lines = [
+        "- **#{id}** (#{state}): #{desc}",
+        format_list_line("Touches", touches),
+        format_list_line("Tests", tests),
+        format_list_line("Depends on", deps),
+        if(rationale, do: "  - Note: #{rationale}", else: nil)
+      ]
+
+      lines |> Enum.reject(&is_nil/1) |> Enum.join("\n")
+    end)
+  end
+
+  defp format_list_line(_label, []), do: nil
+
+  defp format_list_line(label, items) when is_list(items) do
+    "  - #{label}: #{Enum.join(items, ", ")}"
   end
 
   @doc """

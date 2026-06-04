@@ -1,58 +1,63 @@
 Continuation guidance (turn {{turn_number}}/{{max_turns}}):
 
-The previous turn completed normally, but the Linear issue is still in an active state.
-Resume from the current workspace state — do not restart from scratch.
+You're still in the same Claude session as turn 1 — the assigned rows from your initial prompt are in your context. Keep closing them. The orchestrator's Grader runs after this dispatch ends and will mark each row `done` / `partial` / `missing` based on the diff alone.
+
 {{comments_section}}
 
-## Check PR status
+## Step 1: Re-orient
 
-FIRST, check if a PR already exists for this branch:
 ```bash
-gh pr list --head "$(git branch --show-current)" --json number,url,state --jq '.[0]'
+cd "$(grep -oE 'DIRECTORY=[^ ]+' .symphony_slot | cut -d= -f2)"
+source .symphony_slot
+git status --short
+git log --oneline "origin/${BASE_BRANCH:-main}..HEAD" | head
 ```
 
-### If a PR exists:
+If a previous turn left uncommitted changes, decide whether to keep or revert them — the new assignment may have changed what's needed.
 
-1. **Check @agent comments on Linear** — these are instructions from the team and take priority:
-   ```bash
-   curl -s -X POST https://api.linear.app/graphql \
-     -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
-     -H "Content-Type: application/json" \
-     -d '{"query": "query { issue(id: \"{{issue_id}}\") { comments { nodes { body createdAt user { name } } } } }"}' \
-     | python3 -c "import sys,json; [print(f'{c[\"user\"][\"name\"]}: {c[\"body\"]}') for c in json.load(sys.stdin)['data']['issue']['comments']['nodes'] if '@agent' in c['body'].lower()]"
-   ```
-   If there are @agent comments, follow their instructions FIRST.
-2. **Check CI status**: `gh pr checks <number>`
-3. **Fetch review comments** (CodeRabbit and human reviewers):
-   ```bash
-   gh pr view <number> --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
-   gh api repos/{owner}/{repo}/pulls/<number>/comments --jq '.[] | "\(.user.login) on \(.path):\(.line): \(.body)"'
-   ```
-4. **If CI failed**: Fix the failing tests/checks, push, then check again.
-5. **If there are unaddressed review comments**: Read each comment, make the requested changes, push, and re-run tests.
-6. **If CI is green, no @agent comments, and all review comments are addressed**: You are DONE. End your turn cleanly with NO further action.
-   - Do NOT post a comment saying you're done.
-   - Do NOT post `SYMPHONY_NEEDS_HELP` — that is only for things you cannot resolve.
-   - Do NOT re-run tests, take screenshots, or check status again.
-   - Just stop. The orchestrator will see the PR is healthy and stop dispatching you.
+## Step 2: Close the assigned rows
 
-**ALWAYS fetch and rebase before pushing:**
+Same loop as the initial dispatch — for each row in the "Your assigned rows" list:
+
+1. Write the failing test (from the row's `Tests:` line)
+2. Implement the change (in the row's `Touches:` files)
+3. Run `direnv exec . mix test <path>`
+4. Commit per row: `{{ issue.identifier }}: <row-id> <summary>`
+
+After all assigned rows have green tests and commits:
+
 ```bash
-git fetch origin main && git rebase origin/main
+direnv exec . mix check
+direnv exec . mix test
+git fetch origin "${BASE_BRANCH:-main}"
+git rebase "origin/${BASE_BRANCH:-main}"
+git push --force-with-lease origin "$(git branch --show-current)"
 ```
-If there are conflicts, resolve them. Then `git push --force-with-lease`.
 
-### If no PR exists:
-Continue working toward shipping one.
+## Step 3: @agent feedback
 
-Do NOT re-run tests or post additional test reports if the PR is already open and CI is passing.
-Do NOT look for more work. Do NOT expand scope.
+Check Linear for any `@agent` comments newer than your last commit:
 
-## When to use SYMPHONY_NEEDS_HELP
+```bash
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "query { issue(id: \"{{issue_id}}\") { comments { nodes { body createdAt user { name } } } } }"}' \
+  | python3 -c "import sys,json; [print(f'{c[\"user\"][\"name\"]}: {c[\"body\"]}') for c in json.load(sys.stdin)['data']['issue']['comments']['nodes'] if '@agent' in c['body'].lower()]"
+```
 
-Only use this marker if you are BLOCKED by something you cannot resolve:
-- Missing credentials or permissions
-- Unclear requirements that need human clarification
-- Infrastructure issues (broken tooling, missing dependencies)
+`@agent` instructions take priority over the row queue — implement them in this dispatch.
 
-"Waiting for human merge" is NOT a blocker. "PR ready and CI green" is NOT a blocker. In those cases, just end your turn silently.
+## Step 4: Stop
+
+End your turn. The Grader runs next.
+
+Do NOT:
+- Post a status comment (orchestrator owns Linear comms).
+- Update a `WORKPAD.md` file (none exists; plan is in the DB).
+- Take screenshots (Test phase, not yours).
+- Re-run after a green push.
+
+## SYMPHONY_NEEDS_HELP
+
+Only for true blockers — missing backend/data/design, broken slot, contradictory rows. Otherwise, pick the most reasonable interpretation and continue.

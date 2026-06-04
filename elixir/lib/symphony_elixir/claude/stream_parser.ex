@@ -134,6 +134,16 @@ defmodule SymphonyElixir.Claude.StreamParser do
 
   def extract_needs_help(_event), do: nil
 
+  @doc """
+  Concatenate the text blocks of an assistant event's message content.
+
+  Returns the joined text (tool-use and other non-text blocks dropped), or an
+  empty string when the event carries no text. Used by `Claude.OneShot` to read
+  a single-turn reply out of the session JSONL.
+  """
+  @spec extract_text(map()) :: String.t()
+  def extract_text(event), do: extract_text_content(event)
+
   defp detect_needs_help(""), do: nil
   defp detect_needs_help(text) when not is_binary(text), do: nil
 

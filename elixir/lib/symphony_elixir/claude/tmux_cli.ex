@@ -50,6 +50,13 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
 
   Blocks until the TUI is ready (the `❯` prompt appears) or `ready_timeout_ms`
   elapses. Returns a session handle for the other functions in this module.
+
+  Options:
+    * `:tools` — comma-separated allowed-tools string passed to `--tools`.
+      Defaults to the worker toolset; pass `""` for a no-tools reasoning session.
+    * `:append_system_prompt` — extra system prompt appended via
+      `--append-system-prompt` (multi-line safe).
+    * `:ready_timeout_ms`, `:ready_poll_interval_ms` — readiness polling.
   """
   @spec start_session(Path.t(), String.t(), keyword()) ::
           {:ok, session_handle()} | {:error, term()}
@@ -60,7 +67,7 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
       session_name = session_name(session_id)
 
       with :ok <- new_tmux_session(session_name, expanded),
-           :ok <- launch_claude(session_name, session_id),
+           :ok <- launch_claude(session_name, session_id, opts),
            :ok <- wait_for_ready(session_name, opts) do
         Logger.info("Started tmux Claude session session_id=#{session_id} session_name=#{session_name} workspace=#{expanded}")
 
@@ -307,13 +314,15 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
     end
   end
 
-  defp launch_claude(session_name, session_id) do
+  defp launch_claude(session_name, session_id, opts) do
     # `unset CLAUDECODE` so the nested CLI doesn't think it's running inside
     # another Claude Code session. Note: `--dangerously-skip-permissions` does
     # NOT suppress the per-directory "Do you trust this folder?" dialog on a
     # fresh workspace clone — `wait_for_ready` auto-answers it.
+    sysprompt_ref = write_system_prompt(session_id, Keyword.get(opts, :append_system_prompt))
+
     command =
-      "unset CLAUDECODE && #{claude_invocation(session_id)}"
+      "unset CLAUDECODE && #{claude_invocation(session_id, opts, sysprompt_ref)}"
 
     with {_, 0} <- tmux(["send-keys", "-t", pane(session_name), command]),
          {_, 0} <- tmux(["send-keys", "-t", pane(session_name), "Enter"]) do
@@ -323,23 +332,47 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
     end
   end
 
-  defp claude_invocation(session_id) do
+  # Write the caller's system prompt to a temp file and return a shell fragment
+  # that expands it as a single argument via `"$(cat ...)"`. This keeps the
+  # launch command on ONE line even when the prompt spans many lines — a literal
+  # newline in the command string would be submitted as Enter and break the
+  # invocation. Returns "" when no system prompt was requested. The file matches
+  # this session's prompt-file glob, so existing cleanup removes it on stop/reap.
+  defp write_system_prompt(_session_id, nil), do: ""
+  defp write_system_prompt(_session_id, ""), do: ""
+
+  defp write_system_prompt(session_id, prompt) when is_binary(prompt) do
+    path = sysprompt_file_path(session_id)
+    File.write!(path, prompt)
+    "--append-system-prompt \"$(cat '#{path}')\""
+  end
+
+  # `tools` defaults to the worker toolset; pass `tools: ""` for a no-tools
+  # reasoning session. The value is single-quoted so an empty string emits
+  # `--tools ''` rather than swallowing the next flag.
+  defp claude_invocation(session_id, opts, sysprompt_ref) do
+    tools = Keyword.get(opts, :tools, @agent_tools)
+
     base = [
       Config.claude_command(),
       "--session-id",
       session_id,
       "--tools",
-      @agent_tools,
+      single_quote(tools),
       "--mcp-config",
       single_quote(@mcp_config_json),
       "--strict-mcp-config"
     ]
 
     base
+    |> maybe_append_fragment(sysprompt_ref)
     |> maybe_add_flag(Config.claude_dangerously_skip_permissions?(), "--dangerously-skip-permissions")
     |> maybe_add_option(Config.claude_model(), "--model")
     |> Enum.join(" ")
   end
+
+  defp maybe_append_fragment(args, ""), do: args
+  defp maybe_append_fragment(args, fragment), do: args ++ [fragment]
 
   defp maybe_add_flag(args, true, flag), do: args ++ [flag]
   defp maybe_add_flag(args, _false, _flag), do: args
@@ -439,6 +472,10 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
 
   defp prompt_file_path(session_id, turn) do
     Path.join(System.tmp_dir!(), "symphony-#{session_id}-#{turn}.txt")
+  end
+
+  defp sysprompt_file_path(session_id) do
+    Path.join(System.tmp_dir!(), "symphony-#{session_id}-sysprompt.txt")
   end
 
   defp cleanup_prompt_files(session_id) do

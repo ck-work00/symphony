@@ -139,6 +139,12 @@ defmodule SymphonyElixir.Orchestrator do
         {state, eval_result} = record_completed_history(state, running_entry, reason)
         session_id = running_entry_session_id(running_entry)
 
+        # Grade the plan dispatch (if any) BEFORE releasing the slot — the
+        # Grader reads the worker's diff from the slot, which slot release
+        # resets. Synchronous so the refreshed row states are persisted before
+        # any retask continuation re-assesses the plan.
+        maybe_grade_plan_dispatch(running_entry)
+
         # Release the pool slot immediately — the agent process is done.
         # If the issue gets retasked/retried, the slot will be re-claimed on next dispatch.
         if identifier = running_entry[:identifier] do
@@ -490,6 +496,9 @@ defmodule SymphonyElixir.Orchestrator do
         state = record_session_completion_totals(state, running_entry)
         {state, _eval_result} = record_completed_history(state, running_entry, {:terminated, reason})
 
+        # Grade any plan dispatch before workspace cleanup wipes the diff.
+        maybe_grade_plan_dispatch(running_entry)
+
         if cleanup_workspace do
           cleanup_issue_workspace(identifier)
         end
@@ -781,10 +790,15 @@ defmodule SymphonyElixir.Orchestrator do
           case PhaseJudge.pre_dispatch_assess(refreshed_issue, pr_url) do
             :fresh ->
               # Fresh issue — dispatch Investigate phase
-              fresh_metadata = Map.merge(metadata, Map.merge(pr_metadata, %{
-                retask_phases: ["Investigate"],
-                completed_phases: []
-              }))
+              fresh_metadata =
+                Map.merge(
+                  metadata,
+                  Map.merge(pr_metadata, %{
+                    retask_phases: ["Investigate"],
+                    completed_phases: []
+                  })
+                )
+
               do_dispatch_issue(state, refreshed_issue, attempt, fresh_metadata)
 
             :done ->
@@ -801,10 +815,13 @@ defmodule SymphonyElixir.Orchestrator do
               Logger.info("PhaseJudge: dispatching #{issue_context(refreshed_issue)} for phase: #{next_phase} (missing: #{inspect(missing_phases)})")
 
               retask_metadata =
-                Map.merge(metadata, Map.merge(pr_metadata, %{
-                  retask_phases: [next_phase],
-                  completed_phases: completed_phases
-                }))
+                Map.merge(
+                  metadata,
+                  Map.merge(pr_metadata, %{
+                    retask_phases: [next_phase],
+                    completed_phases: completed_phases
+                  })
+                )
 
               do_dispatch_issue(state, refreshed_issue, attempt, retask_metadata)
           end
@@ -834,13 +851,22 @@ defmodule SymphonyElixir.Orchestrator do
 
     runner = Config.agent_runner_module()
 
+    # For every dispatch, ask the Planning workflow for a row assignment.
+    # Generates the plan on the first dispatch of an issue (one LLM call) and
+    # reuses it afterward; may override the phase to Implement with assigned
+    # rows when the plan still has open rows.
+    metadata = maybe_attach_plan_assignment(issue, metadata)
+
     case Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
            runner.run(issue, recipient,
              attempt: attempt,
              retask_phases: metadata[:retask_phases],
              completed_phases: metadata[:completed_phases],
              existing_pr_url: metadata[:existing_pr_url],
-             existing_pr_branch: metadata[:existing_pr_branch]
+             existing_pr_branch: metadata[:existing_pr_branch],
+             assigned_rows: metadata[:assigned_rows],
+             plan_rows: metadata[:plan_rows],
+             plan_dispatch_id: metadata[:plan_dispatch_id]
            )
          end) do
       {:ok, pid} ->
@@ -892,7 +918,8 @@ defmodule SymphonyElixir.Orchestrator do
             phase_changed_at: now,
             phases_seen: [],
             screenshot_urls: [],
-            history_run_id: history_run_id
+            history_run_id: history_run_id,
+            plan_dispatch_id: Map.get(metadata, :plan_dispatch_id)
           })
 
         %{
@@ -911,6 +938,349 @@ defmodule SymphonyElixir.Orchestrator do
           identifier: issue.identifier,
           error: "failed to spawn agent: #{inspect(reason)}"
         })
+    end
+  end
+
+  # --- Planning integration --------------------------------------------------
+  #
+  # The Plan is the authority on Implement-phase state — not PhaseJudge's
+  # "PR exists = Implement done" heuristic. Before EVERY dispatch (regardless
+  # of which phase PhaseJudge picked), assess the plan:
+  #
+  #   * Plan has open rows → override metadata to dispatch Implement, attach
+  #     the assigned rows, create a Dispatch record. PhaseJudge's phase
+  #     decision is ignored. This is the load-bearing fix for "PR exists,
+  #     contract incomplete" issues.
+  #   * Plan complete → leave metadata alone. PhaseJudge governs Test /
+  #     Share Evidence / Simplify.
+  #   * Plan generation failed → fall back to PhaseJudge.
+  defp maybe_attach_plan_assignment(issue, metadata) do
+    assess_opts = [pr_url: metadata[:existing_pr_url]]
+
+    case SymphonyElixir.Planning.Workflow.assess(issue, assess_opts) do
+      {:ok, {:has_open_rows, plan, rows}} ->
+        case SymphonyElixir.Planning.Workflow.start_implement_dispatch(plan, rows) do
+          {:ok, dispatch} ->
+            Logger.info("Plan has #{length(rows)} open rows for #{issue.identifier}; dispatching Implement (overriding any prior phase decision)")
+
+            metadata
+            |> Map.put(:retask_phases, ["Implement"])
+            |> Map.put(:assigned_rows, rows)
+            |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
+            |> Map.put(:plan_dispatch_id, dispatch.id)
+
+          {:error, reason} ->
+            Logger.warning("Failed to record plan dispatch for #{issue.identifier}: #{inspect(reason)}; falling back to PhaseJudge")
+
+            metadata
+        end
+
+      {:ok, {:complete, plan}} ->
+        # Plan rows all done — but if the Tester left a fresh REQUEST_CHANGES
+        # report (newer than the last Implement dispatch), the loop is
+        # otherwise stuck Test→Test→Test because the tester sub-agent is
+        # forbidden from modifying code. Flip all done rows to partial and
+        # force a fresh Implement dispatch so the worker addresses the
+        # tester's gaps. The Grader on next DOWN re-verifies, snapping
+        # untouched rows back to done.
+        case fresh_tester_request_changes?(issue, plan) do
+          {:request_changes, reason} ->
+            with {:ok, reopened} <- reopen_done_rows(plan, reason),
+                 open <- SymphonyElixir.Planning.Plan.open_rows(reopened),
+                 {:ok, dispatch} <-
+                   SymphonyElixir.Planning.Workflow.start_implement_dispatch(reopened, open) do
+              Logger.info("Tester REQUEST_CHANGES on #{issue.identifier}; reopening #{length(open)} done rows and dispatching Implement to address gaps")
+
+              metadata
+              |> Map.put(:retask_phases, ["Implement"])
+              |> Map.put(:assigned_rows, open)
+              |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(reopened))
+              |> Map.put(:plan_dispatch_id, dispatch.id)
+            else
+              err ->
+                Logger.warning("Failed to reopen rows for tester REQUEST_CHANGES on #{issue.identifier}: #{inspect(err)}; falling back to PhaseJudge")
+
+                metadata
+            end
+
+          _ ->
+            Logger.info("Plan complete for #{issue.identifier}; deferring to PhaseJudge for next phase")
+
+            metadata
+        end
+
+      {:error, reason} ->
+        Logger.warning("Plan assess failed for #{issue.identifier}: #{inspect(reason)}; falling back to PhaseJudge")
+
+        metadata
+    end
+  rescue
+    error ->
+      Logger.error("maybe_attach_plan_assignment crashed for #{issue.identifier}: #{Exception.message(error)}")
+
+      metadata
+  end
+
+  # When the Tester sub-agent posts `## Tester Report` with
+  # `Recommendation: REQUEST_CHANGES` AFTER the most recent successful
+  # Implement dispatch, that's a signal the work has gaps but the tester
+  # can't close them itself. PhaseJudge keeps re-dispatching Test in this
+  # case (because Test stays missing without APPROVE), creating an infinite
+  # loop. We detect this here and force the next dispatch to Implement.
+  defp fresh_tester_request_changes?(issue, plan) do
+    issue_id = Map.get(issue, :id)
+
+    case SymphonyElixir.Linear.Client.fetch_all_issue_comments(issue_id) do
+      {:ok, comments} ->
+        latest_report = latest_tester_report(comments)
+        last_implement_finish = last_implement_dispatch_finish(plan)
+
+        cond do
+          is_nil(latest_report) ->
+            :no_report
+
+          not request_changes?(latest_report.body) ->
+            :report_not_request_changes
+
+          is_nil(last_implement_finish) ->
+            {:request_changes, "tester REQUEST_CHANGES (no prior Implement dispatch)"}
+
+          DateTime.compare(latest_report.created_at, last_implement_finish) == :gt ->
+            {:request_changes, "tester REQUEST_CHANGES at #{DateTime.to_iso8601(latest_report.created_at)} (newer than last Implement at #{DateTime.to_iso8601(last_implement_finish)})"}
+
+          true ->
+            :report_stale
+        end
+
+      _ ->
+        :linear_fetch_failed
+    end
+  rescue
+    _ -> :crash
+  end
+
+  defp latest_tester_report(comments) do
+    comments
+    |> Enum.filter(fn c ->
+      is_binary(c.body) and String.contains?(c.body, "## Tester Report") and c.created_at != nil
+    end)
+    |> Enum.max_by(fn c -> DateTime.to_unix(c.created_at) end, fn -> nil end)
+  end
+
+  # A Tester Report is "request_changes-like" if it does NOT cleanly approve.
+  # Tester sub-agents in practice emit non-canonical strings like
+  # `Recommendation: 🚫 BLOCK`, `Recommendation: ⚠ APPROVE-AFTER-PUSH`, or
+  # `Recommendation: REQUEST_CHANGES`. Treat anything that isn't a strict
+  # `Recommendation: APPROVE` (with no `-AFTER-` / `-WITH-` qualifier) as
+  # "needs more work."
+  defp request_changes?(body) when is_binary(body) do
+    not strict_tester_approve?(body)
+  end
+
+  defp request_changes?(_), do: false
+
+  # Strict approve: `Recommendation: APPROVE` followed by end-of-line or
+  # whitespace, with no qualifier like `APPROVE-AFTER-PUSH`. Optionally
+  # bolded (`**Recommendation:** APPROVE`).
+  defp strict_tester_approve?(body) when is_binary(body) do
+    Regex.match?(
+      ~r/Recommendation:\s*(?:\*\*\s*)?APPROVE(?:\s*\*\*)?(?=\s|$|\.)/m,
+      body
+    ) and
+      not Regex.match?(
+        ~r/Recommendation:[^\n]*APPROVE[-\s]+(?:AFTER|WITH|PENDING|SUBJECT|ONCE|IF|MODULO)/i,
+        body
+      )
+  end
+
+  defp strict_tester_approve?(_), do: false
+
+  defp last_implement_dispatch_finish(%SymphonyElixir.Planning.Plan{id: plan_id}) do
+    SymphonyElixir.Planning.dispatches_for_plan(plan_id)
+    |> Enum.filter(fn d -> d.role == "implement" and d.finished_at != nil end)
+    |> Enum.max_by(fn d -> DateTime.to_unix(d.finished_at) end, fn -> nil end)
+    |> then(fn
+      nil -> nil
+      d -> d.finished_at
+    end)
+  end
+
+  # Flip every `done` row back to `partial` with a rationale, persist, return
+  # the updated plan. Deferred and partial/missing rows are left alone.
+  defp reopen_done_rows(%SymphonyElixir.Planning.Plan{} = plan, rationale) do
+    new_rows =
+      plan
+      |> SymphonyElixir.Planning.Plan.rows()
+      |> Enum.map(fn row ->
+        case row["state"] do
+          "done" ->
+            row
+            |> Map.put("state", "partial")
+            |> Map.put("rationale", rationale)
+
+          _ ->
+            row
+        end
+      end)
+
+    SymphonyElixir.Planning.replace_rows(plan, new_rows)
+  end
+
+  # After a plan-driven worker dispatch finishes, grade its diff against the
+  # rows it was assigned. Updates the plan in SQLite; the verdict isn't used
+  # to drive the next dispatch decision directly — PhaseJudge still does that
+  # — but the updated row states feed into the NEXT call to
+  # `Workflow.assess` so re-dispatches get a refreshed assignment.
+  defp maybe_grade_plan_dispatch(running_entry) do
+    case running_entry[:plan_dispatch_id] do
+      nil ->
+        :ok
+
+      dispatch_id when is_binary(dispatch_id) ->
+        with %SymphonyElixir.Planning.Dispatch{} = dispatch <-
+               SymphonyElixir.Repo.get(SymphonyElixir.Planning.Dispatch, dispatch_id),
+             %SymphonyElixir.Planning.Plan{} = plan <-
+               SymphonyElixir.Repo.get(SymphonyElixir.Planning.Plan, dispatch.plan_id),
+             {:ok, diff} <- fetch_dispatch_diff(running_entry) do
+          # External evidence: PR description. Worker can edit it via
+          # `gh pr edit --body`, but it's not in `git diff`. Without this
+          # the Grader can never verify "update PR description" rows.
+          pr_body = fetch_pr_body(running_entry)
+
+          case SymphonyElixir.Planning.Workflow.grade_dispatch(dispatch,
+                 plan: plan,
+                 diff: diff,
+                 test_output: "",
+                 pr_body: pr_body
+               ) do
+            {:ok, {verdict, _updated_plan}} ->
+              Logger.info("Grader verdict for plan dispatch=#{dispatch_id} verdict=#{verdict} issue=#{running_entry[:identifier]}")
+
+              :ok
+
+            {:error, reason} ->
+              Logger.warning("Grader failed for plan dispatch=#{dispatch_id} reason=#{inspect(reason)}")
+
+              :ok
+          end
+        else
+          nil ->
+            Logger.warning("Grader skipped: plan dispatch=#{dispatch_id} not found")
+            :ok
+
+          {:error, reason} ->
+            Logger.warning("Grader skipped: #{inspect(reason)}")
+            :ok
+        end
+    end
+  rescue
+    error ->
+      Logger.error("maybe_grade_plan_dispatch crashed: #{Exception.message(error)}")
+      :ok
+  end
+
+  # Read the working-directory diff from the slot so the Grader has evidence.
+  # Falls back to an empty diff if anything goes wrong — the Grader will then
+  # see "no changes" and mark every assigned row missing, which is the right
+  # answer for a dispatch that failed to push code.
+  defp fetch_dispatch_diff(running_entry) do
+    workspace_path =
+      with identifier when is_binary(identifier) <- running_entry[:identifier],
+           workspace = Path.join(SymphonyElixir.Config.workspace_root(), identifier),
+           slot_file = Path.join(workspace, ".symphony_slot"),
+           {:ok, content} <- File.read(slot_file),
+           [_, dir] <- Regex.run(~r/DIRECTORY=(.+)/, content) do
+        dir |> String.trim()
+      else
+        _ -> nil
+      end
+
+    if workspace_path && File.dir?(workspace_path) do
+      base = read_base_branch(workspace_path)
+
+      # Don't dump the full diff text — for branches with hundreds of commits
+      # it dwarfs the LLM's context and gets truncated, hiding the very files
+      # the Grader is trying to verify. Give a structured summary instead:
+      # file list + line counts + commit subjects. The Grader can match
+      # files against row.touches and commit subjects against row.id from
+      # this without seeing every changed line.
+      cmd = """
+      git fetch origin #{base} >/dev/null 2>&1
+      echo "=== diff base: origin/#{base} ==="
+      echo "=== files changed (git diff --stat) ==="
+      git diff --stat "origin/#{base}..HEAD"
+      echo
+      echo "=== commits on branch (git log --oneline) ==="
+      git log --oneline "origin/#{base}..HEAD" | head -200
+      echo
+      echo "=== file list with status (git diff --name-status) ==="
+      git diff --name-status "origin/#{base}..HEAD"
+      """
+
+      case System.cmd("sh", ["-c", cmd], cd: workspace_path, stderr_to_stdout: true) do
+        {output, 0} -> {:ok, output}
+        {_, _} -> {:ok, ""}
+      end
+    else
+      {:ok, ""}
+    end
+  end
+
+  # External-evidence fetcher: pull the current PR description for the issue's
+  # open PR, so the Grader can verify rows whose deliverable lives in PR-body
+  # markdown rather than in the git tree.
+  defp fetch_pr_body(running_entry) do
+    workspace_path =
+      with identifier when is_binary(identifier) <- running_entry[:identifier],
+           workspace = Path.join(SymphonyElixir.Config.workspace_root(), identifier),
+           slot_file = Path.join(workspace, ".symphony_slot"),
+           {:ok, content} <- File.read(slot_file),
+           [_, dir] <- Regex.run(~r/DIRECTORY=(.+)/, content) do
+        String.trim(dir)
+      else
+        _ -> nil
+      end
+
+    cond do
+      not is_binary(running_entry[:identifier]) ->
+        nil
+
+      workspace_path == nil or not File.dir?(workspace_path) ->
+        nil
+
+      true ->
+        identifier = running_entry[:identifier]
+        # `gh pr list --search "<id>"` is repo-scoped via the slot's git remote.
+        cmd =
+          ~s|gh pr list --search "#{identifier}" --state open --json number,url,body,title --jq '.[0]'|
+
+        case System.cmd("sh", ["-c", cmd], cd: workspace_path, stderr_to_stdout: true) do
+          {output, 0} ->
+            trimmed = String.trim(output)
+            if trimmed in ["", "null"], do: nil, else: trimmed
+
+          _ ->
+            nil
+        end
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp read_base_branch(workspace_path) do
+    # BASE_BRANCH lives in .symphony_slot (written by slot-claim.sh), NOT
+    # .env.symphony (which only has port assignments).
+    slot_file = Path.join(workspace_path, ".symphony_slot")
+
+    case File.read(slot_file) do
+      {:ok, content} ->
+        case Regex.run(~r/BASE_BRANCH=(\S+)/, content) do
+          [_, base] -> String.trim(base)
+          _ -> "main"
+        end
+
+      _ ->
+        "main"
     end
   end
 
@@ -2189,12 +2559,13 @@ defmodule SymphonyElixir.Orchestrator do
     # Extract owner/repo and PR number from URL
     case Regex.run(~r{github\.com/([^/]+/[^/]+)/pull/(\d+)}, pr_url) do
       [_, repo, number] ->
-        case System.cmd("gh", ["pr", "view", number, "--repo", repo, "--json", "mergeable", "--jq", ".mergeable"],
-               stderr_to_stdout: true) do
+        case System.cmd("gh", ["pr", "view", number, "--repo", repo, "--json", "mergeable", "--jq", ".mergeable"], stderr_to_stdout: true) do
           {output, 0} -> String.trim(output) == "CONFLICTING"
           _ -> false
         end
-      _ -> false
+
+      _ ->
+        false
     end
   rescue
     _ -> false
@@ -2231,13 +2602,18 @@ defmodule SymphonyElixir.Orchestrator do
                 {:ok, prs} when is_list(prs) ->
                   Enum.find_value(prs, fn pr ->
                     branch = pr["headRefName"] || ""
+
                     if String.starts_with?(String.downcase(branch), lower <> "-") or String.downcase(branch) == lower do
                       parse_pr_result(Jason.encode!(pr))
                     end
                   end)
-                _ -> nil
+
+                _ ->
+                  nil
               end
-            _ -> nil
+
+            _ ->
+              nil
           end
         end)
 
@@ -2252,7 +2628,9 @@ defmodule SymphonyElixir.Orchestrator do
                 _ -> nil
               end
             end)
-          _ -> nil
+
+          _ ->
+            nil
         end
 
     case result do

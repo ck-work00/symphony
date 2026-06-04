@@ -53,6 +53,7 @@ defmodule SymphonyElixir.MixProject do
         plt_add_apps: [:mix]
       ],
       escript: escript(),
+      releases: releases(),
       aliases: aliases(),
       deps: deps()
     ]
@@ -92,6 +93,16 @@ defmodule SymphonyElixir.MixProject do
       setup: ["deps.get"],
       build: ["escript.build"],
       lint: ["specs.check", "credo --strict"]
+    ]
+  end
+
+  defp releases do
+    [
+      symphony: [
+        include_executables_for: [:unix],
+        applications: [runtime_tools: :permanent],
+        steps: [:assemble]
+      ]
     ]
   end
 

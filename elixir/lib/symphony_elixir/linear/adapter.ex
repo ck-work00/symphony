@@ -15,6 +15,25 @@ defmodule SymphonyElixir.Linear.Adapter do
   }
   """
 
+  @create_comment_with_id_mutation """
+  mutation SymphonyCreateCommentWithId($issueId: String!, $body: String!) {
+    commentCreate(input: {issueId: $issueId, body: $body}) {
+      success
+      comment {
+        id
+      }
+    }
+  }
+  """
+
+  @update_comment_mutation """
+  mutation SymphonyUpdateComment($id: String!, $body: String!) {
+    commentUpdate(id: $id, input: {body: $body}) {
+      success
+    }
+  }
+  """
+
   @update_state_mutation """
   mutation SymphonyUpdateIssueState($issueId: String!, $stateId: String!) {
     issueUpdate(id: $issueId, input: {stateId: $stateId}) {
@@ -71,6 +90,30 @@ defmodule SymphonyElixir.Linear.Adapter do
       false -> {:error, :comment_create_failed}
       {:error, reason} -> {:error, reason}
       _ -> {:error, :comment_create_failed}
+    end
+  end
+
+  @spec create_comment_with_id(String.t(), String.t()) :: {:ok, String.t()} | {:error, term()}
+  def create_comment_with_id(issue_id, body) when is_binary(issue_id) and is_binary(body) do
+    with {:ok, response} <- client_module().graphql(@create_comment_with_id_mutation, %{issueId: issue_id, body: body}),
+         true <- get_in(response, ["data", "commentCreate", "success"]) == true,
+         id when is_binary(id) <- get_in(response, ["data", "commentCreate", "comment", "id"]) do
+      {:ok, id}
+    else
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :comment_create_failed}
+    end
+  end
+
+  @spec update_comment(String.t(), String.t()) :: :ok | {:error, term()}
+  def update_comment(comment_id, body) when is_binary(comment_id) and is_binary(body) do
+    with {:ok, response} <- client_module().graphql(@update_comment_mutation, %{id: comment_id, body: body}),
+         true <- get_in(response, ["data", "commentUpdate", "success"]) == true do
+      :ok
+    else
+      false -> {:error, :comment_update_failed}
+      {:error, reason} -> {:error, reason}
+      _ -> {:error, :comment_update_failed}
     end
   end
 

@@ -39,6 +39,25 @@ defmodule SymphonyElixir.PlanningTest do
     )
   end
 
+  describe "render_plan_comment/1" do
+    test "renders each row with a state marker, state, description, and rationale" do
+      {:ok, plan} = Planning.upsert_plan(plan_attrs())
+      md = Planning.render_plan_comment(plan)
+
+      assert md =~ "## Plan"
+      assert md =~ "⬜ **R1** (missing) — First row"
+      assert md =~ "🟡 **R2** (partial) — Second row"
+      assert md =~ "stub exists"
+    end
+
+    test "uses the done marker for completed rows" do
+      attrs = plan_attrs(%{plan_json: %{"rows" => [%{"id" => "R1", "description" => "d", "state" => "done"}]}})
+      {:ok, plan} = Planning.upsert_plan(attrs)
+
+      assert Planning.render_plan_comment(plan) =~ "✅ **R1** (done)"
+    end
+  end
+
   describe "upsert_plan/1" do
     test "inserts a new plan when none exists for the issue" do
       assert {:ok, %Plan{} = plan} = Planning.upsert_plan(plan_attrs())

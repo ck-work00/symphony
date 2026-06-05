@@ -102,7 +102,8 @@ defmodule SymphonyElixir.Planning.Planner do
                (Keyword.get(opts, :metadata, %{}) || %{})
                |> Map.put("generated_at", DateTime.to_iso8601(DateTime.utc_now()))
            }) do
-      {:ok, plan}
+      # Post the plan to Linear so it's visible/reviewable (best-effort).
+      {:ok, Planning.mirror_plan_to_linear(plan)}
     else
       {:error, _} = err ->
         Logger.error("Planner failed for issue=#{issue_id_for_log(issue)}: #{inspect(err)}")

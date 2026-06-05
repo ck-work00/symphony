@@ -13,8 +13,10 @@ defmodule SymphonyElixir.Planning do
   """
 
   import Ecto.Query
+  require Logger
   alias SymphonyElixir.Repo
   alias SymphonyElixir.Planning.{Plan, Dispatch}
+  alias SymphonyElixir.Tracker
 
   # ---------------------------------------------------------------------------
   # Plan CRUD
@@ -40,6 +42,75 @@ defmodule SymphonyElixir.Planning do
 
   @spec set_plan_status(Plan.t(), String.t()) :: {:ok, Plan.t()} | {:error, Ecto.Changeset.t()}
   def set_plan_status(%Plan{} = plan, status), do: update_plan(plan, %{status: status})
+
+  @doc """
+  Mirror the plan to the issue's Linear thread as a `## Plan` comment, kept in
+  place: posts a new comment the first time (storing `linear_comment_id`) and
+  edits that comment afterward. Best-effort — a Linear failure logs and returns
+  the plan unchanged so it never blocks planning or grading.
+  """
+  @spec mirror_plan_to_linear(Plan.t()) :: Plan.t()
+  def mirror_plan_to_linear(%Plan{} = plan) do
+    body = render_plan_comment(plan)
+
+    case plan.linear_comment_id do
+      nil ->
+        case Tracker.create_comment_with_id(plan.issue_id, body) do
+          {:ok, comment_id} ->
+            case update_plan(plan, %{linear_comment_id: comment_id}) do
+              {:ok, updated} -> updated
+              _ -> plan
+            end
+
+          {:error, reason} ->
+            Logger.warning("Plan mirror: failed to post comment for #{plan.issue_identifier}: #{inspect(reason)}")
+            plan
+        end
+
+      comment_id ->
+        case Tracker.update_comment(comment_id, body) do
+          :ok -> :ok
+          {:error, reason} -> Logger.warning("Plan mirror: failed to update comment for #{plan.issue_identifier}: #{inspect(reason)}")
+        end
+
+        plan
+    end
+  rescue
+    error ->
+      Logger.error("Plan mirror crashed for #{plan.issue_identifier}: #{Exception.message(error)}")
+      plan
+  end
+
+  @doc "Render the plan as a Linear `## Plan` checklist comment."
+  @spec render_plan_comment(Plan.t()) :: String.t()
+  def render_plan_comment(%Plan{} = plan) do
+    rows = Plan.rows(plan)
+
+    lines =
+      Enum.map(rows, fn row ->
+        id = row["id"] || "?"
+        desc = row["description"] || ""
+        mark = state_marker(row["state"])
+        state = row["state"] || "missing"
+        base = "- #{mark} **#{id}** (#{state}) — #{desc}"
+
+        case row["rationale"] do
+          note when is_binary(note) and note != "" -> base <> "\n    - #{note}"
+          _ -> base
+        end
+      end)
+
+    header =
+      "## Plan\n\n_Symphony generated this plan and re-grades each row after every dispatch. ✅ done · 🟡 partial · ⬜ missing · ⏭️ deferred._\n"
+
+    body = if lines == [], do: "_(no rows)_", else: Enum.join(lines, "\n")
+    header <> "\n" <> body
+  end
+
+  defp state_marker("done"), do: "✅"
+  defp state_marker("partial"), do: "🟡"
+  defp state_marker("deferred"), do: "⏭️"
+  defp state_marker(_), do: "⬜"
 
   @doc """
   Replace the row list inside `plan_json`, preserving any other top-level keys.

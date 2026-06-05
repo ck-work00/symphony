@@ -141,7 +141,10 @@ defmodule SymphonyElixir.Planning.Workflow do
         end
       end)
 
-    Planning.replace_rows(plan, updated_rows)
+    case Planning.replace_rows(plan, updated_rows) do
+      {:ok, updated} -> {:ok, Planning.mirror_plan_to_linear(updated)}
+      other -> other
+    end
   end
 
   defp normalize_state("done"), do: "done"

@@ -56,6 +56,7 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
       Defaults to the worker toolset; pass `""` for a no-tools reasoning session.
     * `:append_system_prompt` — extra system prompt appended via
       `--append-system-prompt` (multi-line safe).
+    * `:model` — `--model` override; falls back to `Config.claude_model/0`.
     * `:ready_timeout_ms`, `:ready_poll_interval_ms` — readiness polling.
   """
   @spec start_session(Path.t(), String.t(), keyword()) ::
@@ -364,10 +365,12 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
       "--strict-mcp-config"
     ]
 
+    model = Keyword.get(opts, :model) || Config.claude_model()
+
     base
     |> maybe_append_fragment(sysprompt_ref)
     |> maybe_add_flag(Config.claude_dangerously_skip_permissions?(), "--dangerously-skip-permissions")
-    |> maybe_add_option(Config.claude_model(), "--model")
+    |> maybe_add_option(model, "--model")
     |> Enum.join(" ")
   end
 

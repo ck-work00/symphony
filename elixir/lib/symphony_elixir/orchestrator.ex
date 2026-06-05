@@ -820,7 +820,8 @@ defmodule SymphonyElixir.Orchestrator do
              existing_pr_branch: metadata[:existing_pr_branch],
              assigned_rows: metadata[:assigned_rows],
              plan_rows: metadata[:plan_rows],
-             plan_dispatch_id: metadata[:plan_dispatch_id]
+             plan_dispatch_id: metadata[:plan_dispatch_id],
+             model: metadata[:model]
            )
          end) do
       {:ok, pid} ->
@@ -924,7 +925,13 @@ defmodule SymphonyElixir.Orchestrator do
 
           :needs_test ->
             Logger.info("Plan code rows complete for #{issue.identifier}; dispatching the Test tester sub-agent")
-            {:dispatch, Map.put(metadata, :retask_phases, ["Test"])}
+
+            metadata =
+              metadata
+              |> Map.put(:retask_phases, ["Test"])
+              |> Map.put(:model, Config.claude_test_model())
+
+            {:dispatch, metadata}
 
           {:request_changes, reason} ->
             # The tester found gaps but can't edit code. Reopen the done rows and

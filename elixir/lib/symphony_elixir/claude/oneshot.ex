@@ -59,6 +59,7 @@ defmodule SymphonyElixir.Claude.OneShot do
     session_id = uuid4()
 
     start_opts = [tools: tools, append_system_prompt: system_prompt]
+    start_opts = if model = Keyword.get(opts, :model), do: Keyword.put(start_opts, :model, model), else: start_opts
 
     case session_mod.start_session(workspace, session_id, start_opts) do
       {:ok, session} ->

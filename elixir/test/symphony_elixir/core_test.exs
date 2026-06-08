@@ -542,6 +542,14 @@ defmodule SymphonyElixir.CoreTest do
     assert remaining_ms <= max_remaining_ms
   end
 
+  # Point the workflow path at the real in-repo WORKFLOW.md so stages_directory/0
+  # resolves to elixir/workflow/stages (other tests repoint it to a temp file).
+  defp pin_in_repo_stages do
+    original = Workflow.workflow_file_path()
+    Workflow.set_workflow_file_path(Path.expand("WORKFLOW.md", File.cwd!()))
+    on_exit(fn -> Workflow.set_workflow_file_path(original) end)
+  end
+
   test "fetch issues by states with empty state set is a no-op" do
     assert {:ok, []} = Client.fetch_issues_by_states([])
   end
@@ -566,6 +574,80 @@ defmodule SymphonyElixir.CoreTest do
     assert prompt =~ "Ticket S-1 Refactor backend request path"
     assert prompt =~ "labels=backend"
     assert prompt =~ "attempt=3"
+  end
+
+  test "build_phase_prompt renders the assigned rows as a row-closer assignment" do
+    pin_in_repo_stages()
+
+    issue = %Issue{
+      id: "abc-123",
+      identifier: "GEA-9999",
+      title: "Row closer render check",
+      description: "body",
+      state: "In Progress",
+      url: "https://example.org/issues/GEA-9999",
+      branch_name: "gea-9999-row-closer",
+      labels: ["2.0"]
+    }
+
+    rows = [
+      %{
+        "id" => "filters-row",
+        "description" => "Add status filter",
+        "state" => "missing",
+        "touches" => ["lib/x.ex"],
+        "tests" => ["test/x_test.exs"],
+        "depends_on" => []
+      },
+      %{
+        "id" => "sort-row",
+        "description" => "Default sort by date",
+        "state" => "partial",
+        "touches" => ["lib/y.ex"],
+        "tests" => [],
+        "depends_on" => ["filters-row"],
+        "rationale" => "WIP already adds the column"
+      }
+    ]
+
+    prompt = PromptBuilder.build_phase_prompt(issue, "Implement", assigned_rows: rows, plan_rows: rows, attempt: 1)
+
+    # Row-closer framing from the preamble + execution stage
+    assert prompt =~ "You are a row-closer"
+    assert prompt =~ "### Your assigned rows"
+    assert prompt =~ "### Full plan (for context)"
+
+    # Rendered row detail
+    assert prompt =~ "**filters-row** (missing): Add status filter"
+    assert prompt =~ "**sort-row** (partial): Default sort by date"
+    assert prompt =~ "Touches: lib/x.ex"
+    assert prompt =~ "Tests: test/x_test.exs"
+    assert prompt =~ "Depends on: filters-row"
+    assert prompt =~ "Note: WIP already adds the column"
+
+    # Issue template variables still resolve in the stage prompt
+    assert prompt =~ "gea-9999-row-closer"
+  end
+
+  test "build_phase_prompt omits the row sections when no rows are assigned" do
+    pin_in_repo_stages()
+
+    issue = %Issue{
+      id: "abc-124",
+      identifier: "GEA-9998",
+      title: "No rows",
+      description: "body",
+      state: "In Progress",
+      url: "https://example.org/issues/GEA-9998",
+      branch_name: "gea-9998",
+      labels: ["2.0"]
+    }
+
+    prompt = PromptBuilder.build_phase_prompt(issue, "Implement", attempt: 1)
+
+    refute prompt =~ "**filters-row**"
+    # The assigned-rows heading is still present (static stage text), but renders empty.
+    assert prompt =~ "### Your assigned rows"
   end
 
   test "prompt builder renders issue datetime fields without crashing" do

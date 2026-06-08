@@ -247,6 +247,18 @@ POSTGRES_PORT=$POSTGRES_PORT
 DATABASE_NAME=$DATABASE_NAME
 EOF
 
+# Also drop a copy in the slot dir so `cd $DIR && source .symphony_slot` works
+# exactly as WORKFLOW.md describes (the worker cd's here, where the workspace
+# copy isn't visible). Skip when the workspace IS the slot dir (some issues run
+# directly in the slot) — `cp X X` errors and would abort the hook under `set -e`.
+# Exclude it via .git/info/exclude so the worker's `git add .` never stages it
+# and `git clean -fd` never deletes it.
+if [ "$WORKSPACE/.symphony_slot" != "$DIR/.symphony_slot" ]; then
+  cp "$WORKSPACE/.symphony_slot" "$DIR/.symphony_slot"
+fi
+grep -qxF '.symphony_slot' "$DIR/.git/info/exclude" 2>/dev/null \
+  || echo '.symphony_slot' >> "$DIR/.git/info/exclude"
+
 # Start backend + frontend only if not already healthy
 if [ "$BACKEND_HEALTHY" = "false" ]; then
   "$SCRIPT_DIR/devenv-start.sh"

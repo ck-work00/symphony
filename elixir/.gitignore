@@ -46,6 +46,14 @@ erl_crash.dump
 status.txt
 .codex/original-user-prompt.txt
 
+# Local SQLite databases and their WAL/SHM sidecars.
+*.db
+*.db-shm
+*.db-wal
+
+# Local-only workflow override (not shared).
+WORKFLOW.local.md
+
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez
 

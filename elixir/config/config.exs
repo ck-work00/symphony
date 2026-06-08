@@ -4,10 +4,7 @@ config :phoenix, :json_library, Jason
 
 # The test suite resets the runs table, so :test must never share the dev/prod DB.
 config :symphony_elixir, SymphonyElixir.Repo,
-  database:
-    Path.expand(
-      if(config_env() == :test, do: "~/.symphony/symphony_test.db", else: "~/.symphony/symphony.db")
-    ),
+  database: Path.expand(if(config_env() == :test, do: "~/.symphony/symphony_test.db", else: "~/.symphony/symphony.db")),
   pool_size: 1,
   journal_mode: :wal
 

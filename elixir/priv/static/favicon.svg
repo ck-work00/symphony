@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Sydney Opera House">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7ec3f0"/>
+      <stop offset="1" stop-color="#d7eefb"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f74a6"/>
+      <stop offset="1" stop-color="#1d4e73"/>
+    </linearGradient>
+    <linearGradient id="sail" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e7f0f7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- rounded sky background -->
+  <rect x="0" y="0" width="64" height="64" rx="13" fill="url(#sky)"/>
+
+  <!-- harbour water -->
+  <path d="M0,47 H64 V51 A13,13 0 0 1 51,64 H13 A13,13 0 0 1 0,51 Z" fill="url(#water)"/>
+
+  <!-- podium the shells sit on -->
+  <rect x="7" y="44.5" width="50" height="3.2" rx="1.2" fill="#eef3f7"/>
+
+  <!-- the sails (cascading, billowing shells) -->
+  <g fill="url(#sail)" stroke="#9cc2dd" stroke-width="0.6" stroke-linejoin="round">
+    <path d="M7,45 C7,27 11,14 17,9 C23,14 27,29 30,45 Z"/>
+    <path d="M19,45 C19,31 23,20 28,15 C33,20 36,32 40,45 Z"/>
+    <path d="M30,45 C30,34 34,25 38,21 C42,26 45,35 48,45 Z"/>
+    <path d="M42,45 C42,37 46,31 50,28 C53,32 55,38 57,45 Z"/>
+  </g>
+</svg>

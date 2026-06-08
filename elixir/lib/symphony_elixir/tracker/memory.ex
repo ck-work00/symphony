@@ -41,6 +41,18 @@ defmodule SymphonyElixir.Tracker.Memory do
     :ok
   end
 
+  @spec create_comment_with_id(String.t(), String.t()) :: {:ok, String.t()}
+  def create_comment_with_id(issue_id, body) do
+    send_event({:memory_tracker_comment, issue_id, body})
+    {:ok, "memory-comment-#{issue_id}"}
+  end
+
+  @spec update_comment(String.t(), String.t()) :: :ok
+  def update_comment(comment_id, body) do
+    send_event({:memory_tracker_comment_update, comment_id, body})
+    :ok
+  end
+
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
     send_event({:memory_tracker_state_update, issue_id, state_name})

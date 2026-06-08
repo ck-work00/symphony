@@ -2,22 +2,26 @@ defmodule SymphonyElixirWeb.StaticAssets do
   @moduledoc false
 
   @dashboard_css_path Path.expand("../../priv/static/dashboard.css", __DIR__)
+  @favicon_svg_path Path.expand("../../priv/static/favicon.svg", __DIR__)
   @phoenix_html_js_path Application.app_dir(:phoenix_html, "priv/static/phoenix_html.js")
   @phoenix_js_path Application.app_dir(:phoenix, "priv/static/phoenix.js")
   @phoenix_live_view_js_path Application.app_dir(:phoenix_live_view, "priv/static/phoenix_live_view.js")
 
   @external_resource @dashboard_css_path
+  @external_resource @favicon_svg_path
   @external_resource @phoenix_html_js_path
   @external_resource @phoenix_js_path
   @external_resource @phoenix_live_view_js_path
 
   @dashboard_css File.read!(@dashboard_css_path)
+  @favicon_svg File.read!(@favicon_svg_path)
   @phoenix_html_js File.read!(@phoenix_html_js_path)
   @phoenix_js File.read!(@phoenix_js_path)
   @phoenix_live_view_js File.read!(@phoenix_live_view_js_path)
 
   @assets %{
     "/dashboard.css" => {"text/css", @dashboard_css},
+    "/favicon.svg" => {"image/svg+xml", @favicon_svg},
     "/vendor/phoenix_html/phoenix_html.js" => {"application/javascript", @phoenix_html_js},
     "/vendor/phoenix/phoenix.js" => {"application/javascript", @phoenix_js},
     "/vendor/phoenix_live_view/phoenix_live_view.js" => {"application/javascript", @phoenix_live_view_js}

@@ -79,5 +79,53 @@ The error column currently shows a truncated RuntimeError which is useless. Cons
 - Link to the session log if available
 - Show the last tool call and its result
 
+## Interactive agent takeover
+Investigate whether a running agent session can be converted to interactive mode so the user can communicate with the agent and direct its activities. Currently agents run autonomously — the user can only watch. If the user sees an agent going off-track or wants to steer it, there's no way to intervene without killing the session and starting over.
+
+Questions to answer:
+- Can the Claude CLI accept user input mid-session while an agent is running?
+- Could we inject messages into the conversation via the API (Anthropic or Claude Code)?
+- Would a tmux-based approach work — attach to the session and type directly?
+- What happens to the orchestrator's tracking if the user sends messages the orchestrator didn't initiate?
+- Should this be a "pause and hand off" model (orchestrator stops, user takes over) or a "co-pilot" model (orchestrator and user both send messages)?
+
+## Show issue title on dashboard
+The dashboard only shows issue identifiers (e.g. GEA-2631). Show the issue title alongside it so the operator can tell at a glance what each agent is working on without clicking through to Linear.
+
 ## Dashboard polling overhead
 When the dashboard LiveView is open, it polls `run_events` every second per expanded timeline. This hammers the SQLite DB with redundant queries. Should debounce or only poll when timeline is expanded.
+
+## Add OpenCode as an alternative agent backend
+Symphony's agent layer is already abstracted behind `Config.agent_runner_module()` (claude → `Claude.AgentRunner`, default → legacy Codex runner). Adding sst/opencode as a third backend is mostly mirroring the Claude modules.
+
+Why bother:
+- Lets users run Symphony against models other than Anthropic's (opencode supports Anthropic, OpenAI, OpenRouter, Ollama, etc. via provider/model)
+- Removes vendor lock-in for the harness
+- opencode is open-source and self-hostable
+
+What's needed:
+- `lib/symphony_elixir/opencode/cli.ex` — port spawn, PTY wrapper, NDJSON line streaming. `claude/cli.ex` is the template; flag mapping below.
+- `lib/symphony_elixir/opencode/stream_parser.ex` — map opencode events (`tool_use`, `step_start`, `step_finish`, `text`, `reasoning`, `error`) to Symphony's internal event shape (`:session_started`, `:assistant`, `:tool_use`, `:tool_result`, `:result`). `sessionID` is on every line so session-id extraction is simpler than Claude's.
+- `lib/symphony_elixir/opencode/agent_runner.ex` — turn loop. Almost a copy of `claude/agent_runner.ex` with the CLI alias swapped.
+- Config keys in `config.ex`: `opencode_command`, `opencode_model`, `opencode_turn_timeout_ms`, `opencode_stall_timeout_ms`, `opencode_dangerously_skip_permissions?`. Add an `"opencode" -> SymphonyElixir.OpenCode.AgentRunner` branch in `agent_runner_module/0`.
+- WORKFLOW.md: optional `agent.backend: opencode` and `opencode:` block.
+
+Flag mapping (Claude → opencode):
+- `claude -p <prompt>` → `opencode run <prompt>`
+- `--output-format stream-json` → `--format json`
+- `--resume <id>` → `--session <id>`
+- `--dangerously-skip-permissions` → same flag, same semantics
+
+Real friction points to handle:
+- **Tool restriction is not a CLI flag.** Claude takes `--tools Agent,Bash,Edit,...` per invocation. opencode bakes permissions into named agents (`opencode agent create --permissions bash,read,edit,...`). Setup story: provision a `symphony-worker` agent during slot setup, pass `--agent symphony-worker` per run. This means slot-claim.sh (or first-time setup) needs to create the agent. No equivalent to `--tools ""` for "no tools" — must enumerate.
+- **MCP isolation is config-file driven, not per-invocation.** Claude's `--strict-mcp-config --mcp-config '{}'` makes MCP servers vanish for the run. opencode honors whatever's in `~/.config/opencode/`. To match Symphony's current isolation, run opencode with a sandboxed config dir (e.g. `OPENCODE_CONFIG_DIR=/tmp/symphony-opencode-empty`) so user-level MCP servers don't bleed in. Verify the env var is honored before relying on it.
+- **Token usage is not in the JSON stream.** Claude emits `usage: { input_tokens, output_tokens, cache_creation_input_tokens, cache_read_input_tokens }` on the `result` event. opencode's `run.ts` JSON emitter (sst/opencode v1.14) only writes `tool_use` / `step_start` / `step_finish` / `text` / `reasoning` / `error` — no usage. Symphony's per-run token accounting and the `codex_totals` rollup will go to zero for opencode runs unless we query the session via opencode's HTTP server (`opencode serve` + `/session/:id`) after the run completes. This is the biggest delta — all the others are flag/string remaps.
+- **Phase inference table.** `StreamParser.infer_phase_from_tools` maps Claude's PascalCase tool names (`Read`, `Edit`, `Bash`) to phases. opencode uses lowercase (`read`, `edit`, `bash`). One-line change per mapping.
+
+Estimate: ~500–700 lines of new code, no orchestrator changes, side-by-side via config. Half a day to wire and smoke-test against a low-stakes issue. Another half-day to add HTTP-based token accounting and verify MCP isolation.
+
+References:
+- sst/opencode run.ts: https://github.com/sst/opencode/blob/main/packages/opencode/src/cli/cmd/run.ts
+- CLI docs: https://opencode.ai/docs/cli/
+- Headless --resume status (closed, implemented): https://github.com/sst/opencode/issues/2404
+- Stream JSON output (closed, implemented): https://github.com/sst/opencode/issues/2449

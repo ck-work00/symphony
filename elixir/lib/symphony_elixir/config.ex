@@ -182,6 +182,9 @@ defmodule SymphonyElixir.Config do
                                keys: [
                                  command: [type: :string, default: @default_claude_command],
                                  model: [type: {:or, [:string, nil]}, default: nil],
+                                 # Per-stage model overrides; fall back to `model` when nil.
+                                 test_model: [type: {:or, [:string, nil]}, default: nil],
+                                 grade_model: [type: {:or, [:string, nil]}, default: nil],
                                  turn_timeout_ms: [
                                    type: :integer,
                                    default: @default_claude_turn_timeout_ms
@@ -495,6 +498,18 @@ defmodule SymphonyElixir.Config do
   @spec claude_model() :: String.t() | nil
   def claude_model do
     get_in(validated_workflow_options(), [:claude, :model])
+  end
+
+  @doc "Model for the Test (tester sub-agent) stage; falls back to `claude_model`."
+  @spec claude_test_model() :: String.t() | nil
+  def claude_test_model do
+    get_in(validated_workflow_options(), [:claude, :test_model]) || claude_model()
+  end
+
+  @doc "Model for the Grade (Grader) stage; falls back to `claude_model`."
+  @spec claude_grade_model() :: String.t() | nil
+  def claude_grade_model do
+    get_in(validated_workflow_options(), [:claude, :grade_model]) || claude_model()
   end
 
   @spec claude_turn_timeout_ms() :: pos_integer()
@@ -859,6 +874,11 @@ defmodule SymphonyElixir.Config do
     %{}
     |> put_if_present(:command, command_value(Map.get(section, "command")))
     |> put_if_present(:model, scalar_string_value(Map.get(section, "model")))
+    # command_value (not scalar_string_value) so a blank/whitespace-only value
+    # becomes :omit and the getter falls back to claude_model/0 — an empty
+    # string is truthy, so `get_in(...) || claude_model()` would not.
+    |> put_if_present(:test_model, command_value(Map.get(section, "test_model")))
+    |> put_if_present(:grade_model, command_value(Map.get(section, "grade_model")))
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
     |> put_if_present(:output_format, scalar_string_value(Map.get(section, "output_format")))

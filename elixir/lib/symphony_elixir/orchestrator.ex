@@ -909,7 +909,9 @@ defmodule SymphonyElixir.Orchestrator do
   #         tester sub-agent.
   #       - fresh tester REQUEST_CHANGES → reopen the done rows and dispatch an
   #         Implement row-closer to address the gaps (the tester can't edit code).
-  #       - fresh tester APPROVE → the issue is done.
+  #       - fresh tester APPROVE → enforce the ship gate (CI green AND no
+  #         requested-changes review). Pass → done. Fail → reopen the rows and
+  #         dispatch an Implement row-closer to fix CI / address the review.
   #   * Plan generation failed → block the issue and notify a human.
   #
   # Returns {:dispatch, metadata} | :done | {:blocked, reason}.
@@ -921,7 +923,19 @@ defmodule SymphonyElixir.Orchestrator do
       {:ok, {:complete, plan}} ->
         case tester_gate(issue, plan) do
           :approved ->
-            :done
+            # A tester APPROVE is necessary but not sufficient. Before declaring
+            # the issue done, enforce the objective ship signals the tester can't
+            # see: CI must be green and the PR must carry no requested-changes
+            # review. Either failing reopens the rows so an Implement row-closer
+            # fixes it instead of shipping a red PR.
+            case external_ship_gate(metadata[:existing_pr_url]) do
+              :ok ->
+                :done
+
+              {:request_changes, reason} ->
+                Logger.info("Tester approved #{issue.identifier} but ship gate blocks: #{reason}")
+                reopen_and_dispatch(issue, metadata, plan, reason)
+            end
 
           :needs_test ->
             Logger.info("Plan code rows complete for #{issue.identifier}; dispatching the Test tester sub-agent")
@@ -937,14 +951,7 @@ defmodule SymphonyElixir.Orchestrator do
             # The tester found gaps but can't edit code. Reopen the done rows and
             # dispatch an Implement row-closer; the Grader re-verifies on the next
             # completion, snapping untouched rows back to done.
-            case reopen_done_rows(plan, reason) do
-              {:ok, reopened} ->
-                open = SymphonyElixir.Planning.Plan.open_rows(reopened)
-                dispatch_implement(issue, metadata, reopened, open, "tester REQUEST_CHANGES")
-
-              {:error, err} ->
-                {:blocked, {:reopen_rows_failed, err}}
-            end
+            reopen_and_dispatch(issue, metadata, plan, reason)
         end
 
       {:error, reason} ->
@@ -974,6 +981,104 @@ defmodule SymphonyElixir.Orchestrator do
         {:blocked, {:dispatch_record_failed, reason}}
     end
   end
+
+  # Reopen the plan's done rows and dispatch an Implement row-closer to address
+  # `reason` (a tester REQUEST_CHANGES, a CI failure, or a requested-changes
+  # review). The Grader re-verifies on the next completion, snapping untouched
+  # rows back to done.
+  defp reopen_and_dispatch(issue, metadata, plan, reason) do
+    case reopen_done_rows(plan, reason) do
+      {:ok, reopened} ->
+        open = SymphonyElixir.Planning.Plan.open_rows(reopened)
+        dispatch_implement(issue, metadata, reopened, open, reason)
+
+      {:error, err} ->
+        {:blocked, {:reopen_rows_failed, err}}
+    end
+  end
+
+  # The objective ship gate applied AFTER a tester APPROVE: an issue is only done
+  # when CI is green and the PR carries no requested-changes review. The tester
+  # validates behaviour but is blind to GitHub state, so without this a
+  # tester-approved PR with a red build or a CHANGES_REQUESTED review would be
+  # marked done. Returns :ok | {:request_changes, reason}.
+  #
+  # Inability to evaluate (no PR yet, gh failure) returns :ok rather than
+  # blocking: a transient gh error must never wedge a finished issue, and the
+  # continuation cap bounds any retry. PENDING checks are not treated as a
+  # failure (only explicit failure states are) — the tester runs far longer than
+  # CI, so checks are effectively always resolved by the time the gate runs.
+  defp external_ship_gate(pr_url) do
+    with :ok <- ci_gate(pr_url),
+         :ok <- review_gate(pr_url) do
+      :ok
+    end
+  end
+
+  defp ci_gate(pr_url) do
+    case pr_ref(pr_url) do
+      {repo, number} ->
+        case System.cmd("gh", ["pr", "checks", number, "--repo", repo, "--json", "name,state"], stderr_to_stdout: true) do
+          {output, _status} ->
+            case failed_checks(output) do
+              [] -> :ok
+              names -> {:request_changes, "CI checks failing: #{Enum.join(names, ", ")}"}
+            end
+        end
+
+      :error ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  @failing_check_states ~w(FAILURE ERROR CANCELLED TIMED_OUT ACTION_REQUIRED STARTUP_FAILURE)
+
+  defp failed_checks(output) do
+    case Jason.decode(output) do
+      {:ok, checks} when is_list(checks) ->
+        checks
+        |> Enum.filter(fn c -> Map.get(c, "state") in @failing_check_states end)
+        |> Enum.map(fn c -> Map.get(c, "name", "check") end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp review_gate(pr_url) do
+    case pr_ref(pr_url) do
+      {repo, number} ->
+        case System.cmd("gh", ["pr", "view", number, "--repo", repo, "--json", "reviewDecision"], stderr_to_stdout: true) do
+          {output, 0} ->
+            case Jason.decode(output) do
+              {:ok, %{"reviewDecision" => "CHANGES_REQUESTED"}} ->
+                {:request_changes, "PR review requested changes"}
+
+              _ ->
+                :ok
+            end
+
+          _ ->
+            :ok
+        end
+
+      :error ->
+        :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp pr_ref(pr_url) when is_binary(pr_url) do
+    case Regex.run(~r{github\.com/([^/]+/[^/]+)/pull/(\d+)}, pr_url) do
+      [_, repo, number] -> {repo, number}
+      _ -> :error
+    end
+  end
+
+  defp pr_ref(_), do: :error
 
   # Decide what the tester says about the current (code-complete) plan:
   #   :needs_test            — no tester report yet, or the latest one predates

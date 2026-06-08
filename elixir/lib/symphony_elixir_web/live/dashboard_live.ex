@@ -124,6 +124,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
           </div>
 
           <div class="status-stack">
+            <img src="/favicon.svg" alt="Sydney Opera House" class="hero-icon" width="56" height="56" />
             <span class="status-badge status-badge-live">
               <span class="status-badge-dot"></span>
               Live

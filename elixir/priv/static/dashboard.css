@@ -191,6 +191,14 @@ pre,
   min-width: min(100%, 9rem);
 }
 
+.hero-icon {
+  width: 56px;
+  height: 56px;
+  margin-bottom: 0.85rem;
+  border-radius: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;

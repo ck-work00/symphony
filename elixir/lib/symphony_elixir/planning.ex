@@ -28,11 +28,18 @@ defmodule SymphonyElixir.Planning do
   end
 
   @spec upsert_plan(map()) :: {:ok, Plan.t()} | {:error, Ecto.Changeset.t()}
-  def upsert_plan(%{issue_identifier: issue_identifier} = attrs) do
-    case get_plan_by_issue(issue_identifier) do
-      nil -> attrs |> Plan.create_changeset() |> Repo.insert()
-      plan -> plan |> Plan.update_changeset(attrs) |> Repo.update()
-    end
+  def upsert_plan(%{issue_identifier: _issue_identifier} = attrs) do
+    # Atomic upsert on the issue_identifier unique index — a read-then-insert
+    # lets two concurrent dispatches for one issue both see nil and collide.
+    # Only replace the fields a (re-)plan owns; leave linear_comment_id alone so
+    # an in-place Linear mirror comment survives a re-plan.
+    attrs
+    |> Plan.create_changeset()
+    |> Repo.insert(
+      conflict_target: :issue_identifier,
+      on_conflict: {:replace, [:status, :plan_json, :metadata, :updated_at]},
+      returning: true
+    )
   end
 
   @spec update_plan(Plan.t(), map()) :: {:ok, Plan.t()} | {:error, Ecto.Changeset.t()}
@@ -143,7 +150,7 @@ defmodule SymphonyElixir.Planning do
   def dispatches_for_plan(plan_id) when is_binary(plan_id) do
     Dispatch
     |> where([d], d.plan_id == ^plan_id)
-    |> order_by([d], asc: d.inserted_at)
+    |> order_by([d], asc: d.inserted_at, asc: d.id)
     |> Repo.all()
   end
 end

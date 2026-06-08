@@ -874,8 +874,11 @@ defmodule SymphonyElixir.Config do
     %{}
     |> put_if_present(:command, command_value(Map.get(section, "command")))
     |> put_if_present(:model, scalar_string_value(Map.get(section, "model")))
-    |> put_if_present(:test_model, scalar_string_value(Map.get(section, "test_model")))
-    |> put_if_present(:grade_model, scalar_string_value(Map.get(section, "grade_model")))
+    # command_value (not scalar_string_value) so a blank/whitespace-only value
+    # becomes :omit and the getter falls back to claude_model/0 — an empty
+    # string is truthy, so `get_in(...) || claude_model()` would not.
+    |> put_if_present(:test_model, command_value(Map.get(section, "test_model")))
+    |> put_if_present(:grade_model, command_value(Map.get(section, "grade_model")))
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
     |> put_if_present(:output_format, scalar_string_value(Map.get(section, "output_format")))

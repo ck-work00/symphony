@@ -109,14 +109,22 @@ defmodule SymphonyElixir.Planning.Workflow do
 
     case Grader.grade(dispatch, evidence) do
       {:ok, %Dispatch{grade_json: grade_json}} ->
-        verdict = String.to_atom(grade_json["verdict"])
-        {:ok, updated_plan} = merge_grade_into_plan(plan, grade_json)
-        {:ok, {verdict, updated_plan}}
+        case merge_grade_into_plan(plan, grade_json) do
+          {:ok, updated_plan} -> {:ok, {verdict_atom(grade_json["verdict"]), updated_plan}}
+          {:error, reason} -> {:error, {:merge_grade_failed, reason}}
+        end
 
       err ->
         err
     end
   end
+
+  # Map the grader's verdict string to an atom WITHOUT String.to_atom/1: the
+  # grade JSON is model output, and String.to_atom on untrusted strings can
+  # exhaust the atom table and crash the VM. Anything unexpected is :blocked.
+  defp verdict_atom("approve"), do: :approve
+  defp verdict_atom("request_changes"), do: :request_changes
+  defp verdict_atom(_), do: :blocked
 
   # Merge grader row states into the plan's row list. Each graded row updates
   # the matching plan row's `state` and `rationale`. Rows not in the grader

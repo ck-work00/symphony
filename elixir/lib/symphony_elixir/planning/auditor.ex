@@ -166,12 +166,20 @@ defmodule SymphonyElixir.Planning.Auditor do
     """
   end
 
+  @gh_timeout_ms 30_000
+
   defp run(args) do
     [cmd | rest] = args
 
-    case System.cmd(cmd, rest, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, output}
-      {output, code} -> {:error, {:gh_failed, code, String.slice(output, 0, 1_000)}}
+    # System.cmd/3 has no timeout, so bound it with a Task — a stalled gh must
+    # never block planning. On timeout the Elixir task is killed (the OS process
+    # may linger briefly, but orchestration is freed).
+    task = Task.async(fn -> System.cmd(cmd, rest, stderr_to_stdout: true) end)
+
+    case Task.yield(task, @gh_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {output, 0}} -> {:ok, output}
+      {:ok, {output, code}} -> {:error, {:gh_failed, code, String.slice(output, 0, 1_000)}}
+      _ -> {:error, {:gh_timeout, @gh_timeout_ms}}
     end
   rescue
     error -> {:error, {:gh_crash, Exception.message(error)}}

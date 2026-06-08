@@ -1015,15 +1015,16 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @gh_timeout_ms 30_000
+
   defp ci_gate(pr_url) do
     case pr_ref(pr_url) do
       {repo, number} ->
-        case System.cmd("gh", ["pr", "checks", number, "--repo", repo, "--json", "name,state"], stderr_to_stdout: true) do
-          {output, _status} ->
-            case failed_checks(output) do
-              [] -> :ok
-              names -> {:request_changes, "CI checks failing: #{Enum.join(names, ", ")}"}
-            end
+        {output, _status} = gh_cmd(["pr", "checks", number, "--repo", repo, "--json", "name,state"])
+
+        case failed_checks(output) do
+          [] -> :ok
+          names -> {:request_changes, "CI checks failing: #{Enum.join(names, ", ")}"}
         end
 
       :error ->
@@ -1031,6 +1032,18 @@ defmodule SymphonyElixir.Orchestrator do
     end
   rescue
     _ -> :ok
+  end
+
+  # System.cmd/3 has no timeout; bound the gh call with a Task so a stalled gh
+  # never wedges dispatch. Timeout returns a non-zero sentinel, which the gates
+  # treat as "can't verify" → :ok (fail-safe, never blocks a finished issue).
+  defp gh_cmd(args) do
+    task = Task.async(fn -> System.cmd("gh", args, stderr_to_stdout: true) end)
+
+    case Task.yield(task, @gh_timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {output, status}} -> {output, status}
+      _ -> {"", 124}
+    end
   end
 
   @failing_check_states ~w(FAILURE ERROR CANCELLED TIMED_OUT ACTION_REQUIRED STARTUP_FAILURE)
@@ -1050,7 +1063,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp review_gate(pr_url) do
     case pr_ref(pr_url) do
       {repo, number} ->
-        case System.cmd("gh", ["pr", "view", number, "--repo", repo, "--json", "reviewDecision"], stderr_to_stdout: true) do
+        case gh_cmd(["pr", "view", number, "--repo", repo, "--json", "reviewDecision"]) do
           {output, 0} ->
             case Jason.decode(output) do
               {:ok, %{"reviewDecision" => "CHANGES_REQUESTED"}} ->

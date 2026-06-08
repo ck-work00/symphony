@@ -154,7 +154,7 @@ defmodule SymphonyElixir.Planning.Grader do
   defp pr_body_section(""), do: nil
 
   defp pr_body_section(pr_body) do
-    "## PR description (live from GitHub)\n\nUse this to evaluate rows whose deliverable is a PR-description edit (status tables, contract audits, deferral lists). Workers update PR descriptions via `gh pr edit --body`, which leaves no `git diff` trace — this section is the only evidence available for those rows.\n\n```json\n#{truncate(pr_body, 50_000)}\n```"
+    "## PR description (live from GitHub)\n\nUse this to evaluate rows whose deliverable is a PR-description edit (status tables, contract audits, deferral lists). Workers update PR descriptions via `gh pr edit --body`, which leaves no `git diff` trace — this section is the only evidence available for those rows.\n\n```\n#{truncate(pr_body, 50_000)}\n```"
   end
 
   defp truncate(text, max) when is_binary(text) and byte_size(text) > max do
@@ -166,24 +166,25 @@ defmodule SymphonyElixir.Planning.Grader do
 
   defp validate_shape(%{"verdict" => v, "rows" => rows}, dispatch)
        when v in ["approve", "request_changes", "blocked"] and is_list(rows) do
-    assigned_ids =
-      dispatch.assigned_rows_json
-      |> Map.get("rows", [])
-      |> Enum.map(& &1["id"])
-      |> MapSet.new()
+    # Check row shape FIRST: a non-map row would raise on `&1["id"]` below,
+    # turning a malformed grade into a crash instead of an error tuple.
+    if Enum.all?(rows, &valid_row?/1) do
+      assigned_ids =
+        (dispatch.assigned_rows_json || %{})
+        |> Map.get("rows", [])
+        |> Enum.map(& &1["id"])
+        |> MapSet.new()
 
-    graded_ids = rows |> Enum.map(& &1["id"]) |> MapSet.new()
+      graded_ids = rows |> Enum.map(& &1["id"]) |> MapSet.new()
 
-    cond do
-      not Enum.all?(rows, &valid_row?/1) ->
-        {:error, {:invalid_grade_shape, "rows missing required fields"}}
-
-      not MapSet.subset?(assigned_ids, graded_ids) ->
+      if MapSet.subset?(assigned_ids, graded_ids) do
+        :ok
+      else
         missing = MapSet.difference(assigned_ids, graded_ids) |> MapSet.to_list()
         {:error, {:invalid_grade_shape, "missing grades for rows: #{inspect(missing)}"}}
-
-      true ->
-        :ok
+      end
+    else
+      {:error, {:invalid_grade_shape, "rows missing required fields"}}
     end
   end
 

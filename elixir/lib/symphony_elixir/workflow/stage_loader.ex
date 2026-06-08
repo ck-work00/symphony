@@ -126,7 +126,9 @@ defmodule SymphonyElixir.Workflow.StageLoader do
     lines = String.split(content, "\n")
 
     case find_phase_heading(lines, normalized) do
-      nil -> nil
+      nil ->
+        nil
+
       start_idx ->
         lines
         |> Enum.drop(start_idx)
@@ -152,9 +154,11 @@ defmodule SymphonyElixir.Workflow.StageLoader do
 
   # Collect lines from a heading until the next ## heading (exclusive)
   defp collect_until_next_heading([heading | rest]) do
-    body = Enum.take_while(rest, fn line ->
-      not String.starts_with?(line, "## ")
-    end)
+    body =
+      Enum.take_while(rest, fn line ->
+        not String.starts_with?(line, "## ")
+      end)
+
     [heading | body]
   end
 

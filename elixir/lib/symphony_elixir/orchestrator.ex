@@ -921,6 +921,30 @@ defmodule SymphonyElixir.Orchestrator do
         dispatch_implement(issue, metadata, plan, rows, "#{length(rows)} open rows")
 
       {:ok, {:complete, plan}} ->
+        complete_plan_action(issue, metadata, plan)
+
+      {:error, reason} ->
+        {:blocked, {:plan_assess_failed, reason}}
+    end
+  rescue
+    error ->
+      {:blocked, {:plan_action_crashed, Exception.message(error)}}
+  end
+
+  # The plan's code rows are all done. A fresh @agent comment (the user
+  # retasking after completion) takes priority over the tester gate: reopen the
+  # rows and dispatch an Implement row-closer carrying the feedback. The feedback
+  # rides in as each reopened row's rationale, which PromptBuilder renders into
+  # the worker's prompt — so it works even though the comment predates the
+  # redispatch (the mid-run @agent fetch would miss it). Otherwise, the tester
+  # gate decides.
+  defp complete_plan_action(issue, metadata, plan) do
+    case fresh_agent_feedback(issue, plan) do
+      {:ok, feedback} ->
+        Logger.info("Fresh @agent feedback on #{issue.identifier}; reopening rows to address it")
+        reopen_and_dispatch(issue, metadata, plan, "Reviewer feedback via @agent — address this: #{agent_feedback_snippet(feedback)}")
+
+      :none ->
         case tester_gate(issue, plan) do
           :approved ->
             # A tester APPROVE is necessary but not sufficient. Before declaring
@@ -953,13 +977,40 @@ defmodule SymphonyElixir.Orchestrator do
             # completion, snapping untouched rows back to done.
             reopen_and_dispatch(issue, metadata, plan, reason)
         end
+    end
+  end
 
-      {:error, reason} ->
-        {:blocked, {:plan_assess_failed, reason}}
+  # The latest @agent comment, if it was posted after the last Implement
+  # dispatch finished — i.e. fresh feedback not yet acted on. Returns
+  # {:ok, body} | :none. Once an Implement dispatch runs in response (its
+  # finished_at moves past the comment) it is no longer fresh, so this does not
+  # re-trigger. Best-effort: any fetch error yields :none.
+  defp fresh_agent_feedback(issue, plan) do
+    case SymphonyElixir.Linear.Client.fetch_issue_comments(Map.get(issue, :id)) do
+      {:ok, comments} ->
+        latest =
+          comments
+          |> Enum.filter(fn c -> c.created_at != nil and is_binary(c.body) and String.trim(c.body) != "" end)
+          |> Enum.max_by(fn c -> DateTime.to_unix(c.created_at) end, fn -> nil end)
+
+        last = last_implement_dispatch_finish(plan)
+
+        cond do
+          is_nil(latest) -> :none
+          is_nil(last) -> {:ok, latest.body}
+          DateTime.compare(latest.created_at, last) == :gt -> {:ok, latest.body}
+          true -> :none
+        end
+
+      _ ->
+        :none
     end
   rescue
-    error ->
-      {:blocked, {:plan_action_crashed, Exception.message(error)}}
+    _ -> :none
+  end
+
+  defp agent_feedback_snippet(body) when is_binary(body) do
+    body |> String.trim() |> String.replace(~r/\s+/, " ") |> String.slice(0, 600)
   end
 
   # Record a Dispatch and build the metadata for an Implement row-closer dispatch.

@@ -1132,27 +1132,45 @@ defmodule SymphonyElixir.Orchestrator do
   # Notify a human, move the issue to the configured review state, and stop
   # dispatching it. A human re-activating the issue re-enters the loop fresh.
   defp block_issue_for_plan_failure(%State{} = state, issue, reason) do
-    Logger.error("Plan workflow blocked for #{issue_context(issue)}: #{inspect(reason)}; notifying human")
+    if transient_plan_failure?(reason) do
+      # A transient session-startup failure — usually the planner's tmux
+      # OneShot timing out before it signals ready. The poller re-dispatches
+      # active issues, so this self-recovers on a later attempt (observed:
+      # two ready_timeouts then success). Don't escalate to a human or post a
+      # needs_human comment for a blip the retry path fixes; just log and let
+      # the next poll try again.
+      Logger.warning("Plan workflow hit a transient failure for #{issue_context(issue)}: #{inspect(reason)}; retrying on next poll")
+      complete_issue(state, issue.id)
+    else
+      Logger.error("Plan workflow blocked for #{issue_context(issue)}: #{inspect(reason)}; notifying human")
 
-    message = "Symphony could not produce or advance a plan: #{inspect(reason)}"
+      message = "Symphony could not produce or advance a plan: #{inspect(reason)}"
 
-    Notifier.notify(:needs_human, %{
-      issue_id: issue.id,
-      identifier: issue.identifier,
-      help_message: message
-    })
+      Notifier.notify(:needs_human, %{
+        issue_id: issue.id,
+        identifier: issue.identifier,
+        help_message: message
+      })
 
-    needs_human_state = Config.escalation_needs_human_state()
+      needs_human_state = Config.escalation_needs_human_state()
 
-    if is_binary(needs_human_state) do
-      case Tracker.update_issue_state(issue.id, needs_human_state) do
-        :ok -> Logger.info("Moved blocked issue #{issue.identifier} to state '#{needs_human_state}'")
-        {:error, reason} -> Logger.warning("Failed to move blocked issue #{issue.identifier}: #{inspect(reason)}")
+      if is_binary(needs_human_state) do
+        case Tracker.update_issue_state(issue.id, needs_human_state) do
+          :ok -> Logger.info("Moved blocked issue #{issue.identifier} to state '#{needs_human_state}'")
+          {:error, reason} -> Logger.warning("Failed to move blocked issue #{issue.identifier}: #{inspect(reason)}")
+        end
       end
-    end
 
-    complete_issue(state, issue.id)
+      complete_issue(state, issue.id)
+    end
   end
+
+  # Transient plan-generation failures are session-startup blips (the planner's
+  # tmux OneShot not becoming ready in time), not genuine "needs a human"
+  # blocks. The poller retries active issues, so these recover on their own.
+  defp transient_plan_failure?({:plan_assess_failed, {:start_session_failed, _}}), do: true
+  defp transient_plan_failure?({:start_session_failed, _}), do: true
+  defp transient_plan_failure?(_), do: false
 
   defp latest_tester_report(comments) do
     comments

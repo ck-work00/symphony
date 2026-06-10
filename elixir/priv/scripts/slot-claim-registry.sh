@@ -195,20 +195,6 @@ if [ -z "$PHOENIX_PORT" ] || [ -z "$FRONTEND_PORT" ] || [ -z "$POSTGRES_PORT" ];
   release_lease_and_fail
 fi
 
-# Each slot runs its own postgres. Start it if it isn't up.
-if ! lsof -i :"$POSTGRES_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
-  echo "Postgres not listening on $POSTGRES_PORT — starting it..."
-  direnv exec . devenv up -d postgres 2>&1 | tail -2 || true
-  for _ in $(seq 1 20); do
-    lsof -i :"$POSTGRES_PORT" -sTCP:LISTEN > /dev/null 2>&1 && break
-    sleep 3
-  done
-  if ! lsof -i :"$POSTGRES_PORT" -sTCP:LISTEN > /dev/null 2>&1; then
-    echo "ERROR: postgres failed to come up on $POSTGRES_PORT for $SLOT_NAME"
-    release_lease_and_fail
-  fi
-fi
-
 # Skip the heavy stop/start cycle when the backend is already healthy.
 # gf_platform's main_proxy routes by Host; procurement answers on localhost.
 BACKEND_HEALTHY=false
@@ -219,15 +205,11 @@ if curl -sf "http://localhost:$PHOENIX_PORT/gql" -H "Host: $HEALTH_HOST" -H "Con
   BACKEND_HEALTHY=true
 fi
 
-if [ "$BACKEND_HEALTHY" = "false" ]; then
-  direnv exec . devenv processes stop backend frontend 2>/dev/null || true
-fi
-
 # Reset to a clean state. Designated slots are ephemeral; .env/.envrc are
 # untracked-but-not-cleaned because git clean -fd respects neither — so be
 # explicit: -e protects them.
 git checkout -- . 2>/dev/null || true
-git clean -fd -e .env -e .envrc -e assets.env -e dev.secret.exs 2>/dev/null || true
+git clean -fd -e .env -e .envrc -e .direnv -e assets.env -e dev.secret.exs 2>/dev/null || true
 
 # Fresh branch from origin
 git fetch origin --quiet
@@ -257,11 +239,32 @@ POSTGRES_PORT=$POSTGRES_PORT
 DATABASE_NAME=$DATABASE_NAME
 EOF
 
-# Start services if needed. Non-fatal — if it fails (pending migrations, stale
-# DB state) the agent receives the slot with services down and recovers.
+# Start services if needed. Slots here run their own postgres under one
+# process-compose supervisor, so everything comes up in a single `devenv up`
+# (devenv's setup tasks run migrations as part of bring-up). Don't use
+# devenv-start.sh — it assumes a shared, already-running postgres, and its
+# second `devenv up` collides with the supervisor that owns postgres here.
+# Never a bare `devenv up`: that would also launch the test-suite process.
+# Non-fatal — if bring-up fails the agent receives the slot with services
+# down and recovers.
 if [ "$BACKEND_HEALTHY" = "false" ]; then
-  if ! "$SCRIPT_DIR/devenv-start.sh"; then
-    echo "WARNING: devenv-start.sh failed; slot is claimed but services may be down."
+  direnv exec . devenv processes down 2>/dev/null || true
+  sleep 2
+  direnv exec . devenv up -d postgres backend frontend 2>&1 | tail -3 || true
+  echo "Waiting for backend on port $PHOENIX_PORT..."
+  BACKEND_UP=false
+  for _ in $(seq 1 60); do
+    if curl -sf "http://localhost:$PHOENIX_PORT/gql" -H "Host: $HEALTH_HOST" -H "Content-Type: application/json" \
+       -d '{"query":"{ __typename }"}' 2>/dev/null | grep -q data; then
+      BACKEND_UP=true
+      break
+    fi
+    sleep 3
+  done
+  if [ "$BACKEND_UP" = "true" ]; then
+    echo "Backend ready on port $PHOENIX_PORT"
+  else
+    echo "WARNING: backend not answering on port $PHOENIX_PORT after 180s; slot is claimed but services may be down."
     echo "The agent will need to recover — see the repo's CLAUDE.md for tooling."
   fi
 else

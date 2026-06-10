@@ -37,7 +37,7 @@ if [ -d "$DIR" ]; then
 
   BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
   git checkout -- . 2>/dev/null || true
-  git clean -fd -e .env -e .envrc -e assets.env -e dev.secret.exs 2>/dev/null || true
+  git clean -fd -e .env -e .envrc -e .direnv -e assets.env -e dev.secret.exs 2>/dev/null || true
   git checkout main 2>/dev/null || true
   git reset --hard origin/main 2>/dev/null || true
   echo "Git cleaned (was on branch: $BRANCH)"

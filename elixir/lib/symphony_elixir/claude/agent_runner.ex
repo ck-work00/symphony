@@ -301,9 +301,19 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
   defp fetch_new_comments(_issue, _comment_fetcher, _turn, _comments_after), do: []
 
+  # Retry schedule for the between-turns issue-state refresh. One transient
+  # transport error (a closed keep-alive connection, a network blip) must not
+  # kill a whole multi-turn run — re-dispatching throws away the crashed turn's
+  # uncommitted work. Retry briefly; if Linear still can't answer, fail OPEN
+  # (assume the issue is still active and keep working). The refresh only exists
+  # to stop work when an issue is moved to a terminal state; the next turn and
+  # the orchestrator's own poll loop re-check, so working one extra turn on a
+  # since-closed issue is far cheaper than discarding a turn on an open one.
+  @issue_refresh_retry_delays_ms [2_000, 5_000, 10_000]
+
   defp continue_with_issue?(%Issue{id: issue_id} = issue, issue_state_fetcher)
        when is_binary(issue_id) do
-    case issue_state_fetcher.([issue_id]) do
+    case fetch_issue_state_with_retry(issue_id, issue_state_fetcher, @issue_refresh_retry_delays_ms) do
       {:ok, [%Issue{} = refreshed_issue | _]} ->
         if active_issue_state?(refreshed_issue.state) do
           {:continue, refreshed_issue}
@@ -315,11 +325,32 @@ defmodule SymphonyElixir.Claude.AgentRunner do
         {:done, issue}
 
       {:error, reason} ->
-        {:error, {:issue_state_refresh_failed, reason}}
+        Logger.warning(
+          "Issue state refresh failed after retries for #{issue_context(issue)}: #{inspect(reason)}; assuming still active and continuing"
+        )
+
+        {:continue, issue}
     end
   end
 
   defp continue_with_issue?(issue, _issue_state_fetcher), do: {:done, issue}
+
+  defp fetch_issue_state_with_retry(issue_id, issue_state_fetcher, delays) do
+    case issue_state_fetcher.([issue_id]) do
+      {:error, reason} when delays != [] ->
+        [delay | rest] = delays
+
+        Logger.warning(
+          "Issue state refresh failed for issue_id=#{issue_id}: #{inspect(reason)}; retrying in #{delay}ms"
+        )
+
+        Process.sleep(delay)
+        fetch_issue_state_with_retry(issue_id, issue_state_fetcher, rest)
+
+      result ->
+        result
+    end
+  end
 
   defp active_issue_state?(state_name) when is_binary(state_name) do
     normalized_state = normalize_issue_state(state_name)

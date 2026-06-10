@@ -118,18 +118,24 @@ defmodule SymphonyElixir.Workspace do
     slot_file = Path.join(workspace, ".symphony_slot")
 
     if File.exists?(slot_file) do
-      release_script = scripts_path("slot-release.sh")
+      case Config.workspace_hooks()[:before_remove] do
+        nil ->
+          release_via_default_script(workspace)
 
-      if File.exists?(release_script) do
-        Logger.info("Releasing pool slot for workspace=#{workspace}")
+        command ->
+          # A configured before_remove hook owns slot release. Running the
+          # bundled slot-release.sh here instead would bypass the machine's
+          # slot protocol (e.g. registry leases on gf_engineering machines)
+          # and leave its claim records behind.
+          Logger.info("Releasing pool slot via before_remove hook for workspace=#{workspace}")
 
-        case System.cmd("bash", [release_script, workspace], stderr_to_stdout: true) do
-          {output, 0} ->
-            Logger.info("Pool slot released: #{String.trim(output)}")
-
-          {output, status} ->
-            Logger.warning("Pool slot release failed status=#{status}: #{String.trim(output)}")
-        end
+          run_hook(
+            command,
+            workspace,
+            %{issue_id: nil, issue_identifier: Path.basename(workspace)},
+            "before_remove"
+          )
+          |> ignore_hook_failure()
       end
     else
       # Fallback: scan slot directories for locks referencing this workspace
@@ -137,6 +143,22 @@ defmodule SymphonyElixir.Workspace do
     end
 
     :ok
+  end
+
+  defp release_via_default_script(workspace) do
+    release_script = scripts_path("slot-release.sh")
+
+    if File.exists?(release_script) do
+      Logger.info("Releasing pool slot for workspace=#{workspace}")
+
+      case System.cmd("bash", [release_script, workspace], stderr_to_stdout: true) do
+        {output, 0} ->
+          Logger.info("Pool slot released: #{String.trim(output)}")
+
+        {output, status} ->
+          Logger.warning("Pool slot release failed status=#{status}: #{String.trim(output)}")
+      end
+    end
   end
 
   defp release_orphaned_locks(workspace) do

@@ -450,11 +450,17 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
       String.contains?(output, "trust the files")
   end
 
-  # The main TUI footer always shows a "<n> tokens" counter; modal dialogs (trust,
-  # onboarding) do not. Pairing that with the "❯" input marker is a reliable
-  # "ready for a prompt" signal.
+  # "Ready for a prompt" = the "❯" input marker plus a footer line that only
+  # the live main screen shows — modal dialogs (trust, onboarding, the bypass
+  # acceptance warning) render neither. Older Claude Code footers show a
+  # "<n> tokens" counter; newer ones (v2.1.x) dropped it but always show the
+  # permission-mode hint "(shift+tab to cycle)". Accept either, so readiness
+  # detection survives CLI UI changes. ("❯" alone is NOT sufficient — modal
+  # selection menus use it as their cursor.)
   defp input_ready?(output) do
-    String.contains?(output, "❯") and Regex.match?(~r/\d+\s+tokens/, output)
+    String.contains?(output, "❯") and
+      (Regex.match?(~r/\d+\s+tokens/, output) or
+         String.contains?(output, "shift+tab to cycle"))
   end
 
   defp do_await_jsonl(session_id, poll_ms, deadline) do

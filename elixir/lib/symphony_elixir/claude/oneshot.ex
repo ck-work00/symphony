@@ -80,23 +80,35 @@ defmodule SymphonyElixir.Claude.OneShot do
   corrective nudge if the first reply isn't valid JSON.
   """
   @spec request_json(String.t(), String.t(), opts()) :: {:ok, map() | list()} | {:error, term()}
+  @json_max_attempts 3
+
   def request_json(system_prompt, user_prompt, opts \\ []) do
+    request_json_attempt(system_prompt, user_prompt, opts, 1)
+  end
+
+  # Retry malformed responses: the model sometimes answers with prose, a code
+  # fence, or a tool-use preamble (e.g. "Tool use: **Bash** ...") instead of
+  # clean JSON. Re-ask up to @json_max_attempts with a firmer reminder before
+  # giving up, so one bad turn doesn't block planning/grading.
+  defp request_json_attempt(system_prompt, user_prompt, opts, attempt) do
     case request(system_prompt, user_prompt, opts) do
       {:ok, text} ->
         case decode_json(text) do
           {:ok, _} = ok ->
             ok
 
-          {:error, _} ->
-            Logger.warning("OneShot JSON decode failed; retrying once.")
+          {:error, _} = err ->
+            if attempt < @json_max_attempts do
+              Logger.warning("OneShot JSON decode failed (attempt #{attempt}/#{@json_max_attempts}); retrying.")
 
-            retry_user =
-              user_prompt <>
-                "\n\n[reminder] Reply ONLY with a JSON object — no prose, no code fences."
+              retry_user =
+                user_prompt <>
+                  "\n\n[reminder] Reply with ONLY a single JSON object — no prose, no explanation, no tool calls, no code fences."
 
-            with {:ok, retry_text} <- request(system_prompt, retry_user, opts),
-                 {:ok, json} <- decode_json(retry_text) do
-              {:ok, json}
+              request_json_attempt(system_prompt, retry_user, opts, attempt + 1)
+            else
+              Logger.warning("OneShot JSON decode failed after #{@json_max_attempts} attempts.")
+              err
             end
         end
 

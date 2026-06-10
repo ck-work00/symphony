@@ -71,12 +71,21 @@ If you made changes:
 git add -A && git commit -m "{{ issue.identifier }}: simplify and address review feedback" && git push
 ```
 
-If no changes were needed, post a comment on the **Linear issue** (NOT GitHub):
+### Close out the Linear issue
+
+This is the last phase, so the comment you post now becomes the issue's latest comment — the first thing a human (or a future agent) reads to pick the work up. Leave the issue **continuation-ready**: no ambiguity about what happened, what's next, and where to look.
+
+Post a wrap-up comment on the **Linear issue** (NOT GitHub) with exactly these three parts:
+
+1. **Done** — what shipped, in one or two sentences, with the PR link. State CI status and whether review comments were addressed. If simplification changed nothing, say so in passing — don't make it the headline.
+2. **Next** — what remains, and whose move it is. Normally: "human review + merge approval." List any follow-ups you deliberately left out of scope.
+3. **Where to look** — the branch name, the 2-3 files at the heart of the change, and a pointer to the evidence comment (screenshots) above if one exists. Reference artifacts; do not restate their contents.
+
 ```bash
 curl -s -X POST https://api.linear.app/graphql \
   -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
   -H "Content-Type: application/json" \
-  -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "Reviewed for simplification — no changes needed."}}'
+  -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "YOUR_WRAPUP_HERE"}}'
 ```
 
 ### Done

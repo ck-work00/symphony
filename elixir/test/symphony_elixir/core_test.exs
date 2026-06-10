@@ -137,7 +137,47 @@ defmodule SymphonyElixir.CoreTest do
 
     Workflow.clear_workflow_file_path()
 
-    assert Workflow.workflow_file_path() == Path.join(File.cwd!(), "WORKFLOW.md")
+    expected =
+      if File.exists?(Path.join(File.cwd!(), "WORKFLOW.local.md")) do
+        Path.join(File.cwd!(), "WORKFLOW.local.md")
+      else
+        Path.join(File.cwd!(), "WORKFLOW.md")
+      end
+
+    assert Workflow.workflow_file_path() == expected
+  end
+
+  test "workflow file path prefers a gitignored WORKFLOW.local.md over WORKFLOW.md" do
+    original_workflow_path = Workflow.workflow_file_path()
+    original_cwd = File.cwd!()
+
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-workflow-local-test-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(tmp_dir)
+    File.write!(Path.join(tmp_dir, "WORKFLOW.md"), "---\n---\ntracked")
+    File.write!(Path.join(tmp_dir, "WORKFLOW.local.md"), "---\n---\nlocal")
+
+    on_exit(fn ->
+      File.cd!(original_cwd)
+      File.rm_rf!(tmp_dir)
+      Workflow.set_workflow_file_path(original_workflow_path)
+    end)
+
+    Workflow.clear_workflow_file_path()
+    File.cd!(tmp_dir)
+
+    # File.cwd!/0 resolves symlinks (e.g. macOS /var -> /private/var), so
+    # compare against the resolved cwd rather than the raw tmp_dir path.
+    resolved_tmp_dir = File.cwd!()
+
+    assert Workflow.workflow_file_path() == Path.join(resolved_tmp_dir, "WORKFLOW.local.md")
+
+    File.rm!(Path.join(tmp_dir, "WORKFLOW.local.md"))
+    assert Workflow.workflow_file_path() == Path.join(resolved_tmp_dir, "WORKFLOW.md")
   end
 
   test "workflow file path resolves from app env when set" do

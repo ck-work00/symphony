@@ -301,6 +301,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
 
+    # Free slots whose lock no longer backs a running issue (e.g. a run that
+    # ended without its slot release firing). Runs every poll so abandoned
+    # locks don't silently shrink effective concurrency.
+    reap_stale_pool_locks(state)
+
     if not Config.within_active_hours?() do
       Logger.debug("Outside active hours, skipping dispatch")
       state
@@ -309,6 +314,16 @@ defmodule SymphonyElixir.Orchestrator do
       |> check_completed_pr_health()
       |> do_dispatch()
     end
+  end
+
+  defp reap_stale_pool_locks(%State{running: running}) do
+    running
+    |> Map.values()
+    |> Enum.map(& &1[:identifier])
+    |> Enum.reject(&is_nil/1)
+    |> Workspace.reap_stale_pool_locks()
+
+    :ok
   end
 
   defp do_dispatch(%State{} = state) do

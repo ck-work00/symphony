@@ -162,6 +162,82 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  # Grace window so a freshly-claimed slot (lock written during before_run, just
+  # before the run registers) is never reaped out from under a starting agent.
+  @stale_lock_grace_seconds 300
+
+  @doc """
+  Release pool-slot locks (slots 5–8, both repos) that no longer back a running
+  issue. `active_identifiers` is the set of issue identifiers currently running.
+  A lock is reaped when its issue is not running and it is older than the grace
+  window. Best-effort; never raises. Returns the reaped slot names.
+  """
+  @spec reap_stale_pool_locks([String.t()]) :: [String.t()]
+  def reap_stale_pool_locks(active_identifiers) when is_list(active_identifiers) do
+    active = MapSet.new(active_identifiers)
+    gearflow_dir = Path.expand("~/Documents/Gearflow")
+    now = DateTime.utc_now()
+
+    for repo <- ["platform", "procurement"], slot <- 5..8, reduce: [] do
+      reaped ->
+        slot_name = "#{repo}-#{slot}"
+        lock_path = Path.join([gearflow_dir, slot_name, ".git", "symphony.lock"])
+
+        with true <- File.exists?(lock_path),
+             {:ok, content} <- File.read(lock_path),
+             identifier when is_binary(identifier) <- lock_issue_identifier(content),
+             false <- MapSet.member?(active, identifier),
+             true <- lock_older_than?(content, now, @stale_lock_grace_seconds) do
+          Logger.info("Reaping stale pool lock #{slot_name}: issue #{identifier} is not running")
+          File.rm(lock_path)
+
+          case lock_workspace(content) do
+            ws when is_binary(ws) -> File.rm(Path.join(ws, ".symphony_slot"))
+            _ -> :ok
+          end
+
+          [slot_name | reaped]
+        else
+          _ -> reaped
+        end
+    end
+  rescue
+    error ->
+      Logger.warning("Stale pool-lock reap failed: #{Exception.message(error)}")
+      []
+  end
+
+  # Derive the issue identifier from the lock's branch (e.g. branch=gea-2079-...
+  # → "GEA-2079"). Using the branch, not the workspace basename, is robust when
+  # the workspace IS the slot dir (some issues run directly in the slot).
+  defp lock_issue_identifier(content) do
+    case Regex.run(~r/branch=(gea-\d+)/i, content) do
+      [_, branch] -> String.upcase(branch)
+      _ -> nil
+    end
+  end
+
+  defp lock_workspace(content) do
+    case Regex.run(~r/workspace=(\S+)/, content) do
+      [_, ws] -> ws
+      _ -> nil
+    end
+  end
+
+  defp lock_older_than?(content, now, grace_seconds) do
+    case Regex.run(~r/claimed_at=(\S+)/, content) do
+      [_, ts] ->
+        case DateTime.from_iso8601(ts) do
+          {:ok, claimed, _} -> DateTime.diff(now, claimed) > grace_seconds
+          _ -> true
+        end
+
+      # No timestamp recorded → treat as old enough to reap.
+      _ ->
+        true
+    end
+  end
+
   @spec release_pool_slot_for_issue(String.t()) :: :ok
   def release_pool_slot_for_issue(identifier) when is_binary(identifier) do
     safe_id = safe_identifier(identifier)

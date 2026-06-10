@@ -294,19 +294,37 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
   # fail with "can't find window: 0").
   defp pane(session_name), do: "#{session_name}:"
 
+  # Env vars the agent's prompt promises it has. A tmux session inherits the
+  # tmux SERVER's environment, not this BEAM's — so anything Symphony was
+  # launched with (sourced .env) silently vanishes from agent sessions unless
+  # passed explicitly. A tester that was promised $LINEAR_API_KEY_AUTOMATION
+  # and didn't have it went hunting through the macOS keychain and 1Password
+  # for it — deliver on the promise instead.
+  @session_env_passthrough ~w(LINEAR_API_KEY LINEAR_API_KEY_AUTOMATION)
+
+  defp session_env_args do
+    Enum.flat_map(@session_env_passthrough, fn var ->
+      case System.get_env(var) do
+        nil -> []
+        value -> ["-e", "#{var}=#{value}"]
+      end
+    end)
+  end
+
   defp new_tmux_session(session_name, workspace) do
-    args = [
-      "new-session",
-      "-d",
-      "-s",
-      session_name,
-      "-x",
-      Integer.to_string(Config.claude_tmux_width()),
-      "-y",
-      Integer.to_string(Config.claude_tmux_height()),
-      "-c",
-      workspace
-    ]
+    args =
+      [
+        "new-session",
+        "-d",
+        "-s",
+        session_name,
+        "-x",
+        Integer.to_string(Config.claude_tmux_width()),
+        "-y",
+        Integer.to_string(Config.claude_tmux_height()),
+        "-c",
+        workspace
+      ] ++ session_env_args()
 
     case tmux(args) do
       {_, 0} ->

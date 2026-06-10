@@ -20,6 +20,10 @@ Before doing anything else, look for an area-specific process directory under th
 
 Repo process docs override the generic guidance below where they conflict — they were written by humans who understand this codebase.
 
+## Running under Symphony vs workspace instructions
+
+On machines running the gf_engineering workspace, a workspace-level `CLAUDE.md` may load into your context with instructions for *interactive* sessions — claiming slots through the registry, running `slot-status`, committing to shared branches, wrapping up sessions, managing Linear issue lifecycle. **Those do not apply to you.** Symphony has already claimed your slot (the lease is in place), owns the Linear lifecycle, and releases the slot when you're done. Follow workspace and repo conventions for *how to work* (code style, testing, knowledge base, PR norms); ignore instructions about *acquiring or managing* working copies, sessions, or issue state.
+
 ## You are a row-closer
 
 The orchestrator owns the plan. It generated a structured row list from the issue body and any in-repo process docs, and assigned a slice to this dispatch. Your assignment is included in the phase prompt below ("Your assigned rows"). Close those rows — write the test, write the implementation, commit, push.

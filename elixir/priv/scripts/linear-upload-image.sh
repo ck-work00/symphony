@@ -41,18 +41,26 @@ UPLOAD_URL=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys
 ASSET_URL=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['data']['fileUpload']['uploadFile']['assetUrl'])")
 
 # Build header args from the required headers array
-HEADER_ARGS=$(echo "$RESPONSE" | python3 -c "
+# Build curl -H flags from Linear's required upload headers, preserving each
+# header value verbatim. These values contain spaces (e.g.
+# `Content-Disposition: attachment; filename="x.png"`) and are part of the GCS
+# signed-URL signature, so they must be passed intact. The previous
+# `$(echo "$HEADER_ARGS" | xargs)` word-split them, which corrupted the signed
+# PUT — it failed (or stored nothing), leaving the asset URL pointing at a 404
+# and rendering as a broken image in Linear.
+HEADER_FLAGS=()
+while IFS= read -r _hdr; do
+  [ -n "$_hdr" ] && HEADER_FLAGS+=(-H "$_hdr")
+done < <(echo "$RESPONSE" | python3 -c "
 import sys, json
-headers = json.load(sys.stdin)['data']['fileUpload']['uploadFile']['headers']
-for h in headers:
-    print(f'-H')
-    print(f'{h[\"key\"]}: {h[\"value\"]}')
+for h in json.load(sys.stdin)['data']['fileUpload']['uploadFile']['headers']:
+    print(f\"{h['key']}: {h['value']}\")
 ")
 
 # Step 2: Upload the file to GCS
 UPLOAD_RESULT=$(curl -sf -X PUT "$UPLOAD_URL" \
   -H "Content-Type: $CONTENT_TYPE" \
-  $(echo "$HEADER_ARGS" | xargs) \
+  ${HEADER_FLAGS[@]+"${HEADER_FLAGS[@]}"} \
   --data-binary "@$FILE" 2>&1) || {
   echo "ERROR: Upload failed: $UPLOAD_RESULT" >&2
   exit 1

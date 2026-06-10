@@ -287,8 +287,12 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
 
   defp session_name(session_id), do: "#{Config.claude_tmux_session_prefix()}-#{session_id}"
 
-  # Claude Code runs in window 0 of the session; target it explicitly.
-  defp pane(session_name), do: "#{session_name}:0"
+  # Claude Code runs in the session's only window. Target the session's
+  # active window (`session:`) rather than a hardcoded index — the first
+  # window is 0 only when the user's tmux config doesn't set `base-index`
+  # (a common customization is `base-index 1`, which made `session:0`
+  # fail with "can't find window: 0").
+  defp pane(session_name), do: "#{session_name}:"
 
   defp new_tmux_session(session_name, workspace) do
     args = [

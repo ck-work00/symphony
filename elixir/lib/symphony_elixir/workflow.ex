@@ -7,11 +7,20 @@ defmodule SymphonyElixir.Workflow do
   alias SymphonyElixir.Workflow.StageLoader
 
   @workflow_file_name "WORKFLOW.md"
+  @local_workflow_file_name "WORKFLOW.local.md"
 
   @spec workflow_file_path() :: Path.t()
   def workflow_file_path do
     Application.get_env(:symphony_elixir, :workflow_file_path) ||
-      Path.join(File.cwd!(), @workflow_file_name)
+      default_workflow_file_path()
+  end
+
+  # A gitignored WORKFLOW.local.md beats the tracked WORKFLOW.md, so each
+  # machine can carry its own tracker filter / ports / hooks without dirtying
+  # the repo. Stages still resolve relative to this directory either way.
+  defp default_workflow_file_path do
+    local = Path.join(File.cwd!(), @local_workflow_file_name)
+    if File.exists?(local), do: local, else: Path.join(File.cwd!(), @workflow_file_name)
   end
 
   @spec set_workflow_file_path(Path.t()) :: :ok

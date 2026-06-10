@@ -28,7 +28,7 @@ The orchestrator runs an external Grader after this dispatch completes. Whatever
 
 Work the rows top-to-bottom in the "Your assigned rows" list. For each row:
 
-1. **Write a failing test** that exercises the row's behavior. Use the file paths from the row's `Tests:` line. For frontend-only rows, skip if no test path is given.
+1. **Write a failing test** that exercises the row's behavior. Use the file paths from the row's `Tests:` line. If the row lists no test path (frontend-only, documentation, or research rows), skip this — the committed artifact named in `Touches:` is the row's deliverable, and the Grader judges it on substance.
 2. **Run that test** to confirm it fails: `direnv exec . mix test <path>`.
 3. **Implement** the production code in the files listed under `Touches:`. Stay within those files unless an unavoidable refactor demands more — if so, scope the spillover narrowly and call it out in your commit message.
 4. **Run the test again** to confirm it passes.

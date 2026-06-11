@@ -1,6 +1,7 @@
 ---
 tracker:
   kind: linear
+  api_key: $LINEAR_API_KEY_AUTOMATION
   filter:
     labels:
       include:
@@ -110,7 +111,7 @@ Execute these phases in order. Do not skip phases.
 3. Post your investigation findings and plan as a comment on the Linear issue:
    ```bash
    curl -s -X POST https://api.linear.app/graphql \
-     -H "Authorization: $LINEAR_API_KEY" \
+     -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
      -H "Content-Type: application/json" \
      -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "YOUR_COMMENT"}}'
    ```
@@ -153,7 +154,7 @@ Post test results — including screenshots — to the Linear issue:
 2. **Post a comment** with test summary and embedded screenshot images:
    ```bash
    curl -s -X POST https://api.linear.app/graphql \
-     -H "Authorization: $LINEAR_API_KEY" \
+     -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
      -H "Content-Type: application/json" \
      -d '{
        "query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }",
@@ -187,7 +188,7 @@ Issue status transitions happen automatically via PR merge and deploy automation
 - Use `direnv exec .` prefix for ALL mix/npm commands in the working directory.
 - Backend and frontend are already running — do NOT start them yourself.
 - The `.env` file in the working directory has all credentials.
-- `$LINEAR_API_KEY` is available in the environment for Linear API calls.
+- `$LINEAR_API_KEY_AUTOMATION` is available in the environment for Linear API calls.
 
 {% if attempt %}
 ## Continuation

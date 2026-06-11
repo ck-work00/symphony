@@ -14,3 +14,9 @@ config :symphony_elixir, SymphonyElixir.Repo,
   database: Path.expand(db_path),
   pool_size: 1,
   journal_mode: :wal
+
+# Allow running against a workflow file outside the checkout (e.g. a
+# workspace-owned production config). Falls back to <cwd>/WORKFLOW.md.
+if workflow_path = System.get_env("SYMPHONY_WORKFLOW_PATH") do
+  config :symphony_elixir, :workflow_file_path, Path.expand(workflow_path)
+end

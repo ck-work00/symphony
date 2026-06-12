@@ -173,10 +173,21 @@ defmodule SymphonyElixir.Workspace do
   before_remove release firing (e.g. an agent killed on a stall timeout).
 
   `active_identifiers` is the set of issue identifiers currently running. A lease
-  is reaped only when its issue is NOT running — so a re-dispatched issue, which
-  is already back in `running`, is never clobbered — and it was claimed more than
-  the grace window ago. The freed slot is reset to origin/main so it is
-  immediately reclaimable. Best-effort; never raises. Returns the reaped slots.
+  is reaped only when ALL of these hold:
+
+    * Symphony owns it (`owner == "symphony"`). A lease held by an interactive
+      human session is NEVER touched — `release_registry_lease/1` does a
+      `git reset --hard`, which on a shared machine would wipe a teammate's
+      uncommitted work. This owner guard is the primary safety.
+    * It sits on a Symphony-designated slot (when `SYMPHONY_PLATFORM_SLOTS` /
+      `SYMPHONY_PROCUREMENT_SLOTS` are set — the same designation
+      slot-claim-registry.sh honors). Defense in depth on top of the owner guard.
+    * Its issue is NOT running — so a re-dispatched issue, already back in
+      `running`, is never clobbered — and it was claimed more than the grace
+      window ago.
+
+  The freed slot is reset to origin/main so it is immediately reclaimable.
+  Best-effort; never raises. Returns the reaped slots.
   """
   @spec reap_stale_pool_locks([String.t()]) :: [String.t()]
   def reap_stale_pool_locks(active_identifiers) when is_list(active_identifiers) do
@@ -187,7 +198,8 @@ defmodule SymphonyElixir.Workspace do
       reaped ->
         issue = to_string(lease["linear_issue"] || "")
 
-        if issue != "" and not MapSet.member?(active, issue) and
+        if symphony_owned?(lease) and eligible_slot?(slot_name) and
+             issue != "" and not MapSet.member?(active, issue) and
              lease_claimed_older_than?(lease["claimed"], now, @orphan_lease_grace_seconds) do
           Logger.info("Reaping orphaned slot lease #{slot_name}: issue #{issue} is not running")
           release_registry_lease(slot_name)
@@ -242,6 +254,36 @@ defmodule SymphonyElixir.Workspace do
 
       _ ->
         []
+    end
+  end
+
+  # The reaper only ever touches leases Symphony itself wrote. An interactive
+  # human session's lease (any other owner) is off limits — the per-poll
+  # `git reset --hard` in release_registry_lease/1 would otherwise wipe a
+  # teammate's uncommitted work on a shared machine.
+  defp symphony_owned?(lease), do: lease["owner"] == "symphony"
+
+  # When the Symphony-eligible slot set is configured (SYMPHONY_PLATFORM_SLOTS /
+  # SYMPHONY_PROCUREMENT_SLOTS — space-separated slot numbers, the same
+  # designation slot-claim-registry.sh honors), confine reaping to those slots.
+  # An unconfigured repo falls back to the owner guard alone.
+  defp eligible_slot?(slot_name) do
+    case Regex.run(~r/^gf_(platform|procurement)-slot(\d+)$/, slot_name) do
+      [_, repo, num] ->
+        case eligible_slot_numbers(repo) do
+          [] -> true
+          nums -> num in nums
+        end
+
+      _ ->
+        false
+    end
+  end
+
+  defp eligible_slot_numbers(repo) do
+    case System.get_env("SYMPHONY_#{String.upcase(repo)}_SLOTS") do
+      v when is_binary(v) and v != "" -> String.split(v, ~r/\s+/, trim: true)
+      _ -> []
     end
   end
 

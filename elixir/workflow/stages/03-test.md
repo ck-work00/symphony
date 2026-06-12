@@ -71,14 +71,17 @@ Then for each page:
 
 ```bash
 node /tmp/walk-<page>.mjs <route>
-# Upload screenshots and collect Linear asset URLs
-URLS=""
-for img in /tmp/walk-<page>-*.png; do
-  URL=$("${SYMPHONY_SCRIPTS}linear-upload-image.sh" "$img")
-  URLS="$URLS\n![$(basename "$img" .png)]($URL)"
-done
-echo -e "$URLS"
+# Upload the screenshots you just captured and get ready-to-paste markdown.
+# Pass the ACTUAL files you saved — any names, any number. The helper uploads
+# each to Linear and prints one `![name](assetUrl)` line per file. It reports
+# failures on stderr and NEVER prints an empty `![]()`, so its stdout is safe
+# to paste verbatim into the Screenshots section of your report.
+"${SYMPHONY_SCRIPTS}linear-embed-images.sh" /tmp/walk-*.png   # <- use YOUR real screenshot paths/globs
 ```
+
+Do NOT hand-write image tags and do NOT post `![]()`. Only paste lines that
+`linear-embed-images.sh` actually printed. If it embedded zero images, your
+screenshots never uploaded — fix the paths and re-run before posting the report.
 
 If `npx playwright` fails to launch Chromium (first-run), do `npx --yes playwright install chromium` once and retry.
 
@@ -124,7 +127,8 @@ Post a `## Tester Report` comment on the Linear issue. Format:
 
 ### Screenshots
 
-<embed side-by-side React-vs-LV screenshots for every state and dialog you walked>
+<paste the `![name](url)` lines printed by linear-embed-images.sh — side-by-side
+React-vs-LV for every state and dialog you walked. Never leave an empty `![]()`.>
 
 **Recommendation: APPROVE** | **REQUEST_CHANGES** | **BLOCKED**
 ```

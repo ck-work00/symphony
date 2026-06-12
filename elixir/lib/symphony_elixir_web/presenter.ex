@@ -124,9 +124,9 @@ defmodule SymphonyElixirWeb.Presenter do
       frontend_url: slot[:frontend_url],
       backend_url: slot[:backend_url],
       tokens: %{
-        input_tokens: entry.codex_input_tokens,
-        output_tokens: entry.codex_output_tokens,
-        total_tokens: entry.codex_total_tokens
+        input_tokens: Map.get(entry, :cumulative_input_tokens, entry.codex_input_tokens),
+        output_tokens: Map.get(entry, :cumulative_output_tokens, entry.codex_output_tokens),
+        total_tokens: Map.get(entry, :cumulative_total_tokens, entry.codex_total_tokens)
       }
     }
   end
@@ -212,9 +212,9 @@ defmodule SymphonyElixirWeb.Presenter do
       last_message: summarize_message(running.last_codex_message),
       last_event_at: iso8601(running.last_codex_timestamp),
       tokens: %{
-        input_tokens: running.codex_input_tokens,
-        output_tokens: running.codex_output_tokens,
-        total_tokens: running.codex_total_tokens
+        input_tokens: Map.get(running, :cumulative_input_tokens, running.codex_input_tokens),
+        output_tokens: Map.get(running, :cumulative_output_tokens, running.codex_output_tokens),
+        total_tokens: Map.get(running, :cumulative_total_tokens, running.codex_total_tokens)
       }
     }
   end

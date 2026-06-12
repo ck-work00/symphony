@@ -48,23 +48,22 @@ If the change is backend-only (no UI impact), the smoke test screenshots are suf
 
 ### Step 3: Upload screenshots and post to Linear
 
-Upload each screenshot and collect the asset URLs:
+Upload the screenshots you captured and collect ready-to-paste markdown. Pass
+the ACTUAL files you saved (any names). The helper uploads each to Linear,
+prints one `![name](assetUrl)` line per file, and NEVER prints an empty `![]()`:
 
 ```bash
-URLS=""
-for img in /tmp/evidence-*.png; do
-  URL=$("${SYMPHONY_SCRIPTS}linear-upload-image.sh" "$img")
-  URLS="$URLS\n![$(basename "$img" .png)]($URL)"
-done
+URLS=$("${SYMPHONY_SCRIPTS}linear-embed-images.sh" /tmp/evidence-*.png)   # <- use YOUR real screenshot paths
 ```
 
-Post a comment with all screenshots:
+If `$URLS` is empty the upload failed — do NOT post empty `![]()`; fix the paths
+and re-run. Then post a comment with the embedded screenshots:
 
 ```bash
 curl -s -X POST https://api.linear.app/graphql \
   -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
   -H "Content-Type: application/json" \
-  -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "## Browser Test Results\n\nLogged in and verified core pages load. Screenshots below.\n\n'"$(echo -e "$URLS")"'"}}'
+  -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "## Browser Test Results\n\nLogged in and verified core pages load. Screenshots below.\n\n'"$URLS"'"}}'
 ```
 
 ### Done

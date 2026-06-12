@@ -132,111 +132,126 @@ defmodule SymphonyElixir.Workspace do
         end
       end
     else
-      # Fallback: scan slot directories for locks referencing this workspace
-      release_orphaned_locks(workspace)
+      # No marker here — the per-poll registry reaper (reap_stale_pool_locks/1)
+      # clears any lease that outlives its run, so there's nothing to do inline.
+      Logger.debug("No .symphony_slot marker at #{workspace}; registry reaper handles orphan cleanup")
     end
 
     :ok
   end
 
-  defp release_orphaned_locks(workspace) do
-    expanded = Path.expand(workspace)
-    gearflow_dir = Path.expand("~/Documents/Gearflow")
-
-    for repo <- ["platform", "procurement"],
-        slot <- 5..8 do
-      lock_path = Path.join([gearflow_dir, "#{repo}-#{slot}", ".git", "symphony.lock"])
-
-      if File.exists?(lock_path) do
-        case File.read(lock_path) do
-          {:ok, content} ->
-            if String.contains?(content, "workspace=#{expanded}") do
-              Logger.info("Removing orphaned lock #{lock_path} (workspace=#{expanded})")
-              File.rm(lock_path)
-            end
-
-          _ ->
-            :ok
-        end
-      end
-    end
-  end
-
-  # Grace window so a freshly-claimed slot (lock written during before_run, just
-  # before the run registers) is never reaped out from under a starting agent.
-  @stale_lock_grace_seconds 300
+  # Grace window so a freshly-claimed lease (written by before_run just before
+  # the run registers) is never reaped out from under a starting agent. The
+  # primary safety is the not-running check below; this is extra margin.
+  @orphan_lease_grace_seconds 120
 
   @doc """
-  Release pool-slot locks (slots 5–8, both repos) that no longer back a running
-  issue. `active_identifiers` is the set of issue identifiers currently running.
-  A lock is reaped when its issue is not running and it is older than the grace
-  window. Best-effort; never raises. Returns the reaped slot names.
+  Release registry slot leases that no longer back a running issue — the
+  orchestrator's per-poll safety net for slots whose run ended without its
+  before_remove release firing (e.g. an agent killed on a stall timeout).
+
+  `active_identifiers` is the set of issue identifiers currently running. A lease
+  is reaped only when its issue is NOT running — so a re-dispatched issue, which
+  is already back in `running`, is never clobbered — and it was claimed more than
+  the grace window ago. The freed slot is reset to origin/main so it is
+  immediately reclaimable. Best-effort; never raises. Returns the reaped slots.
   """
   @spec reap_stale_pool_locks([String.t()]) :: [String.t()]
   def reap_stale_pool_locks(active_identifiers) when is_list(active_identifiers) do
     active = MapSet.new(active_identifiers)
-    gearflow_dir = Path.expand("~/Documents/Gearflow")
     now = DateTime.utc_now()
 
-    for repo <- ["platform", "procurement"], slot <- 5..8, reduce: [] do
+    for {slot_name, lease} <- registry_leases(), reduce: [] do
       reaped ->
-        slot_name = "#{repo}-#{slot}"
-        lock_path = Path.join([gearflow_dir, slot_name, ".git", "symphony.lock"])
+        issue = to_string(lease["linear_issue"] || "")
 
-        with true <- File.exists?(lock_path),
-             {:ok, content} <- File.read(lock_path),
-             identifier when is_binary(identifier) <- lock_issue_identifier(content),
-             false <- MapSet.member?(active, identifier),
-             true <- lock_older_than?(content, now, @stale_lock_grace_seconds) do
-          Logger.info("Reaping stale pool lock #{slot_name}: issue #{identifier} is not running")
-          File.rm(lock_path)
-
-          case lock_workspace(content) do
-            ws when is_binary(ws) -> File.rm(Path.join(ws, ".symphony_slot"))
-            _ -> :ok
-          end
-
+        if issue != "" and not MapSet.member?(active, issue) and
+             lease_claimed_older_than?(lease["claimed"], now, @orphan_lease_grace_seconds) do
+          Logger.info("Reaping orphaned slot lease #{slot_name}: issue #{issue} is not running")
+          release_registry_lease(slot_name)
           [slot_name | reaped]
         else
-          _ -> reaped
+          reaped
         end
     end
   rescue
     error ->
-      Logger.warning("Stale pool-lock reap failed: #{Exception.message(error)}")
+      Logger.warning("Orphan lease reap failed: #{Exception.message(error)}")
       []
   end
 
-  # Derive the issue identifier from the lock's branch (e.g. branch=gea-2079-...
-  # → "GEA-2079"). Using the branch, not the workspace basename, is robust when
-  # the workspace IS the slot dir (some issues run directly in the slot).
-  defp lock_issue_identifier(content) do
-    case Regex.run(~r/branch=(gea-\d+)/i, content) do
-      [_, branch] -> String.upcase(branch)
-      _ -> nil
+  # local-dev dir that holds registry/ and the slot working copies.
+  defp local_dev_dir do
+    case System.get_env("GEARFLOW_WORKSPACE") do
+      ws when is_binary(ws) and ws != "" ->
+        Path.join(ws, "local-dev")
+
+      _ ->
+        # Fallback: SYMPHONY_SCRIPTS is <local-dev>/symphony/elixir/priv/scripts/
+        case System.get_env("SYMPHONY_SCRIPTS") do
+          s when is_binary(s) and s != "" -> Path.expand(Path.join(s, "../../../.."))
+          _ -> nil
+        end
     end
   end
 
-  defp lock_workspace(content) do
-    case Regex.run(~r/workspace=(\S+)/, content) do
-      [_, ws] -> ws
-      _ -> nil
-    end
-  end
+  # [{slot_name, lease_map}] for each symphony slot lease in the registry.
+  defp registry_leases do
+    case local_dev_dir() do
+      ld when is_binary(ld) ->
+        dir = Path.join(ld, "registry")
 
-  defp lock_older_than?(content, now, grace_seconds) do
-    case Regex.run(~r/claimed_at=(\S+)/, content) do
-      [_, ts] ->
-        case DateTime.from_iso8601(ts) do
-          {:ok, claimed, _} -> DateTime.diff(now, claimed) > grace_seconds
-          _ -> true
+        case File.ls(dir) do
+          {:ok, files} ->
+            files
+            |> Enum.filter(&Regex.match?(~r/^gf_(?:platform|procurement)-slot\d+\.json$/, &1))
+            |> Enum.flat_map(fn file ->
+              with {:ok, content} <- File.read(Path.join(dir, file)),
+                   {:ok, lease} <- Jason.decode(content) do
+                [{String.replace_suffix(file, ".json", ""), lease}]
+              else
+                _ -> []
+              end
+            end)
+
+          _ ->
+            []
         end
 
-      # No timestamp recorded → treat as old enough to reap.
       _ ->
-        true
+        []
     end
   end
+
+  # Remove a slot's registry lease and reset its working copy to origin/main so
+  # it is immediately reclaimable. slot_name e.g. "gf_procurement-slot5".
+  defp release_registry_lease(slot_name) do
+    case local_dev_dir() do
+      ld when is_binary(ld) ->
+        File.rm(Path.join([ld, "registry", "#{slot_name}.json"]))
+        slot_dir = Path.join(ld, slot_name)
+
+        if File.dir?(slot_dir) do
+          System.cmd("git", ["-C", slot_dir, "checkout", "--", "."], stderr_to_stdout: true)
+          System.cmd("git", ["-C", slot_dir, "checkout", "main"], stderr_to_stdout: true)
+          System.cmd("git", ["-C", slot_dir, "reset", "--hard", "origin/main"], stderr_to_stdout: true)
+        end
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  defp lease_claimed_older_than?(claimed, now, grace) when is_binary(claimed) do
+    case DateTime.from_iso8601(claimed) do
+      {:ok, dt, _} -> DateTime.diff(now, dt) > grace
+      _ -> true
+    end
+  end
+
+  defp lease_claimed_older_than?(_claimed, _now, _grace), do: true
 
   @spec release_pool_slot_for_issue(String.t()) :: :ok
   def release_pool_slot_for_issue(identifier) when is_binary(identifier) do

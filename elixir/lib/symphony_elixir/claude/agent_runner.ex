@@ -250,9 +250,6 @@ defmodule SymphonyElixir.Claude.AgentRunner do
 
       {:done, _refreshed_issue} ->
         :ok
-
-      {:error, reason} ->
-        {:error, reason}
     end
   end
 
@@ -325,9 +322,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
         {:done, issue}
 
       {:error, reason} ->
-        Logger.warning(
-          "Issue state refresh failed after retries for #{issue_context(issue)}: #{inspect(reason)}; assuming still active and continuing"
-        )
+        Logger.warning("Issue state refresh failed after retries for #{issue_context(issue)}: #{inspect(reason)}; assuming still active and continuing")
 
         {:continue, issue}
     end
@@ -340,9 +335,7 @@ defmodule SymphonyElixir.Claude.AgentRunner do
       {:error, reason} when delays != [] ->
         [delay | rest] = delays
 
-        Logger.warning(
-          "Issue state refresh failed for issue_id=#{issue_id}: #{inspect(reason)}; retrying in #{delay}ms"
-        )
+        Logger.warning("Issue state refresh failed for issue_id=#{issue_id}: #{inspect(reason)}; retrying in #{delay}ms")
 
         Process.sleep(delay)
         fetch_issue_state_with_retry(issue_id, issue_state_fetcher, rest)

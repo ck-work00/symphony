@@ -105,6 +105,20 @@ For each row in the Contract:
    - `⚠ partial` — implemented but with drift; describe the drift specifically
    - `❌ missing or broken` — not implemented, or implemented but crashes / misbehaves
 
+### Step 4b: Shell & integration parity (overlay / cross-cutting components)
+
+If the work migrates an overlay/sheet/modal, or a component reachable from more than one page, walking the content rows is NOT enough — the parity gaps live in how the component behaves as a *shell* and integrates with the rest of the app, none of which shows up as a per-row "does the card render". Against the reference (React), verify and screenshot:
+
+- **Dismiss & interaction.** Open it, then: click a blank area outside it (does it close like the reference?), click a nav link or button *outside* it (does the link navigate, or get eaten by an overlay?), press Escape, and use the back/close control. Match the reference's backdrop exactly — a dimmed scrim, or deliberately none with the underlying list still visible and interactive.
+- **Every breakpoint.** At mobile and desktop widths, confirm the layout matches the reference (e.g. full-screen vs. fixed-width sidebar) at the *same* breakpoint the reference uses — don't accept `sm` where the reference flips at `md`.
+- **Every entry point.** Open it from each surface the reference exposes it on — a per-page bell/button on each section page, deep-link URLs — not only its own route. A missing entry point is a missing row even when the component itself is perfect.
+
+Drift here (wrong backdrop, wrong breakpoint, a missing entry point, the wrong dismiss destination) is `⚠ partial` or `❌`, exactly like content drift.
+
+### Step 4c: Flippability sweep (flag-on, component + siblings)
+
+A flag is only flippable if turning it on doesn't break its neighbors. With every relevant `lv_*` flag ON, load the component's own route AND every sibling section route that shares its layout or data helpers. Assert each returns HTTP 200 with a clean console — no 500, `KeyError`, or `Ecto.Query.CastError`. This is cheap and catches the classic flip failures: a `/:section/inbox` path cast as a record id, or a shared helper that returns an incomplete struct once the flag enables a new template branch. Any crash is `❌` and forces `REQUEST_CHANGES` (or `BLOCKED` if the route won't load at all), regardless of how clean the content rows looked.
+
 ### Step 5: Post the Tester Report
 
 Post a `## Tester Report` comment on the Linear issue. Format:
@@ -117,6 +131,8 @@ Post a `## Tester Report` comment on the Linear issue. Format:
 - Roles tested: <list, e.g. "dispatcher, requester">
 - Console: <clean | new errors: <list>>
 - Asset bundle: <fresh ~XXX KB | stub>
+- Shell parity (overlay/cross-cutting only): <n/a | verified: dismiss+breakpoints+entry-points | drift: <list>>
+- Flippability sweep: <n/a | routes loaded clean: <list> | crashes: <list>>
 
 ### Verified rows
 
@@ -141,7 +157,7 @@ React-vs-LV for every state and dialog you walked. Never leave an empty `![]()`.
 
 The `Recommendation:` line is parsed by the orchestrator. Choose:
 
-- **APPROVE** — every Contract row is `✅ verified`, console is clean, no drift. The orchestrator marks Test done and dispatches Share Evidence.
+- **APPROVE** — every Contract row is `✅ verified`, console is clean, no drift, and (for an overlay/cross-cutting component) shell parity is verified and the flippability sweep is clean. The orchestrator marks Test done and dispatches Share Evidence.
 - **REQUEST_CHANGES** — at least one row is `⚠` or `❌`. The orchestrator re-dispatches Implement to address the gaps.
 - **BLOCKED** — the page can't be tested at all (preflight failed, page won't load, slot is broken). Include a description of the blocker.
 

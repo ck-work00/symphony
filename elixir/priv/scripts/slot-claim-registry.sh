@@ -104,8 +104,12 @@ for SLOT_NUM in $ELIGIBLE_SLOTS; do
   LEASE_CLAIMED="$(json_field "$LEASE" claimed)"
   STALE_REASON=""
 
-  if [ "$LEASE_WORKSPACE" = "$WORKSPACE" ] || [ "$LEASE_BRANCH" = "$BRANCH" ]; then
-    STALE_REASON="matches current workspace or branch (re-claim for same issue)"
+  # Same workspace = this very issue re-claiming (idempotent retry) — safe to
+  # take back. A bare branch match is NOT enough: a different run reusing the
+  # branch name must still pass the age/health gate below, so we never evict a
+  # healthy run just because the branch matches.
+  if [ "$LEASE_WORKSPACE" = "$WORKSPACE" ]; then
+    STALE_REASON="matches current workspace (re-claim for same issue)"
   elif [ -n "$LEASE_WORKSPACE" ] && [ ! -d "$LEASE_WORKSPACE" ]; then
     STALE_REASON="workspace $LEASE_WORKSPACE no longer exists"
   elif [ -n "$LEASE_CLAIMED" ]; then
@@ -174,6 +178,18 @@ SLOT_NUM="$CLAIMED_SLOT"
 SLOT_NAME="${REPO_PREFIX}-slot${SLOT_NUM}"
 DIR="$(slot_dir "$SLOT_NUM")"
 LEASE="$(lease_file "$SLOT_NUM")"
+
+# The lease now exists. Any failure before the slot is fully provisioned — a
+# `set -e` exit from git fetch/checkout/reset, a failed .symphony_slot write,
+# anything — must remove the lease, or a half-claimed slot stays leased until
+# the next stale sweep. A single EXIT trap covers every path; we clear it by
+# setting CLAIM_COMPLETE=1 once the slot contract is written.
+CLAIM_COMPLETE=0
+cleanup_incomplete_claim() {
+  [ "$CLAIM_COMPLETE" = "1" ] || rm -f "$LEASE"
+}
+trap cleanup_incomplete_claim EXIT
+
 cd "$DIR"
 
 release_lease_and_fail() {
@@ -228,16 +244,22 @@ direnv exec . mix deps.get --quiet 2>&1 | tail -5 || true
 # Migrations and DB recovery are the agent's job — not slot-claim's. A failing
 # migration here would block the run entirely; the agent can diagnose DB state.
 
-# Slot contract for the agent.
+# Slot contract for the agent. BASE_BRANCH is always main here (we reset the
+# slot to origin/main above); the orchestrator reads it to know what to diff the
+# run against, so record it explicitly rather than letting it guess.
 cat > "$WORKSPACE/.symphony_slot" <<EOF
 SLOT_NAME=$SLOT_NAME
 DIRECTORY=$DIR
 BRANCH=$BRANCH
+BASE_BRANCH=main
 PHOENIX_PORT=$PHOENIX_PORT
 FRONTEND_PORT=$FRONTEND_PORT
 POSTGRES_PORT=$POSTGRES_PORT
 DATABASE_NAME=$DATABASE_NAME
 EOF
+
+# Slot contract is on disk — the claim is committed; don't reap the lease on exit.
+CLAIM_COMPLETE=1
 
 # Start services if needed. Slots here run their own postgres under one
 # process-compose supervisor, so everything comes up in a single `devenv up`

@@ -138,9 +138,29 @@ defmodule SymphonyElixir.Workspace do
           |> ignore_hook_failure()
       end
     else
-      # No marker here — the per-poll registry reaper (reap_stale_pool_locks/1)
-      # clears any lease that outlives its run, so there's nothing to do inline.
-      Logger.debug("No .symphony_slot marker at #{workspace}; registry reaper handles orphan cleanup")
+      # No marker, but a registry lease for this workspace may still be open
+      # (e.g. the marker was cleaned but release didn't finish). Release it
+      # synchronously so a manual redispatch can reclaim the slot now instead of
+      # waiting for the next poll-cycle reaper.
+      release_registry_lease_for_workspace(workspace)
+    end
+
+    :ok
+  end
+
+  # Synchronously release any Symphony-owned lease whose recorded workspace is
+  # this one. Mirrors the per-poll reaper but targets a single workspace, for
+  # the manual-redispatch path that needs the slot freed immediately.
+  defp release_registry_lease_for_workspace(workspace) do
+    expanded = Path.expand(workspace)
+
+    for {slot_name, lease} <- registry_leases(),
+        symphony_owned?(lease),
+        ws = to_string(lease["workspace"] || ""),
+        ws != "",
+        Path.expand(ws) == expanded do
+      Logger.info("Releasing registry lease #{slot_name} for workspace=#{workspace} (no marker; synchronous release)")
+      release_registry_lease(slot_name)
     end
 
     :ok
@@ -287,18 +307,20 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  # Remove a slot's registry lease and reset its working copy to origin/main so
-  # it is immediately reclaimable. slot_name e.g. "gf_procurement-slot5".
+  # Reset a slot's working copy to origin/main, then free its registry lease —
+  # but ONLY if the reset fully succeeded. Freeing the lease first (the old
+  # behavior) made a slot claimable while it could still hold the previous run's
+  # branch or a dirty worktree, so the next dispatch inherited contaminated
+  # state. slot_name e.g. "gf_procurement-slot5".
   defp release_registry_lease(slot_name) do
     case local_dev_dir() do
       ld when is_binary(ld) ->
-        File.rm(Path.join([ld, "registry", "#{slot_name}.json"]))
         slot_dir = Path.join(ld, slot_name)
 
-        if File.dir?(slot_dir) do
-          System.cmd("git", ["-C", slot_dir, "checkout", "--", "."], stderr_to_stdout: true)
-          System.cmd("git", ["-C", slot_dir, "checkout", "main"], stderr_to_stdout: true)
-          System.cmd("git", ["-C", slot_dir, "reset", "--hard", "origin/main"], stderr_to_stdout: true)
+        if reset_slot_to_main?(slot_dir) do
+          File.rm(Path.join([ld, "registry", "#{slot_name}.json"]))
+        else
+          Logger.warning("Leaving lease #{slot_name} in place: reset failed, so the slot is not safe to reclaim yet")
         end
 
       _ ->
@@ -306,6 +328,31 @@ defmodule SymphonyElixir.Workspace do
     end
 
     :ok
+  end
+
+  # True only when the slot is clean origin/main afterward. A missing working
+  # copy is vacuously clean (nothing to contaminate); otherwise every git step
+  # must exit 0.
+  defp reset_slot_to_main?(slot_dir) do
+    if File.dir?(slot_dir) do
+      [
+        ["-C", slot_dir, "checkout", "--", "."],
+        ["-C", slot_dir, "checkout", "main"],
+        ["-C", slot_dir, "reset", "--hard", "origin/main"]
+      ]
+      |> Enum.reduce(true, fn args, ok ->
+        case System.cmd("git", args, stderr_to_stdout: true) do
+          {_, 0} ->
+            ok
+
+          {out, code} ->
+            Logger.warning("git #{Enum.join(args, " ")} failed (#{code}) in #{slot_dir}: #{String.trim(out)}")
+            false
+        end
+      end)
+    else
+      true
+    end
   end
 
   defp lease_claimed_older_than?(claimed, now, grace) when is_binary(claimed) do

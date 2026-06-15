@@ -27,6 +27,45 @@ if [ -z "$SLOT_NAME" ] || [ -z "$DIR" ]; then
   exit 1
 fi
 
+# Validate the target before any destructive git. The .symphony_slot contract
+# can be stale or hand-edited, so don't trust DIRECTORY: re-derive the canonical
+# slot path from SLOT_NAME and confirm the slot is one Symphony may touch. This
+# is the PR's "only operate on designated slots" rule — without it a bad contract
+# could git reset --hard the wrong working copy.
+if ! printf '%s' "$SLOT_NAME" | grep -Eq '^gf_(platform|procurement)-slot[0-9]+$'; then
+  echo "ERROR: SLOT_NAME '$SLOT_NAME' is not a gf_<repo>-slotN name — refusing to clean"
+  exit 1
+fi
+
+REPO="${SLOT_NAME%%-slot*}"       # gf_platform | gf_procurement
+SLOT_NUM="${SLOT_NAME##*-slot}"   # trailing slot number
+EXPECTED_DIR="$GEARFLOW_WORKSPACE/local-dev/$SLOT_NAME"
+
+if [ "$DIR" != "$EXPECTED_DIR" ]; then
+  echo "ERROR: DIRECTORY '$DIR' is not this slot's canonical path '$EXPECTED_DIR' — refusing to clean"
+  exit 1
+fi
+DIR="$EXPECTED_DIR"
+
+case "$REPO" in
+  gf_platform)    ELIGIBLE="${SYMPHONY_PLATFORM_SLOTS:-}" ;;
+  gf_procurement) ELIGIBLE="${SYMPHONY_PROCUREMENT_SLOTS:-}" ;;
+  *)              ELIGIBLE="" ;;
+esac
+
+if [ -n "$ELIGIBLE" ]; then
+  slot_eligible=false
+  for n in $ELIGIBLE; do
+    [ "$n" = "$SLOT_NUM" ] && slot_eligible=true && break
+  done
+  if [ "$slot_eligible" != "true" ]; then
+    echo "ERROR: slot $SLOT_NAME is not Symphony-eligible ($REPO: $ELIGIBLE) — refusing to clean"
+    exit 1
+  fi
+else
+  echo "WARNING: Symphony-eligible slot set for $REPO is unset; proceeding on the canonical-path check alone"
+fi
+
 echo "Releasing symphony slot $SLOT_NAME..."
 
 if [ -d "$DIR" ]; then

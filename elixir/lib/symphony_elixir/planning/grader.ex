@@ -98,6 +98,15 @@ defmodule SymphonyElixir.Planning.Grader do
      documentation, research deliverables) — for those the committed artifact
      itself is the contract; grade on whether the diff delivers what the row
      describes (sections present, content substantive, references real).
+  10. Cross-cutting / parity rows need INTEGRATION evidence, not just the
+      component file. A row that makes an overlay or shared component "flippable"
+      or "at parity" is `partial` if the diff only touches the component's own
+      file and skips the surfaces the row names — the layout shell, the sibling
+      pages' call sites, or the router. Grade `done` only when the diff shows the
+      integration itself (e.g. the bell added to each section page, the
+      dismiss/route helper, the over-any-section safety-net route), because that
+      shell/integration surface is exactly where parity migrations silently fall
+      short while every content row looks complete.
   """
 
   @doc """

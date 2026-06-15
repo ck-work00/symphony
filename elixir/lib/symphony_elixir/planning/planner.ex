@@ -74,6 +74,27 @@ defmodule SymphonyElixir.Planning.Planner do
      Playwright (`npx playwright`); that is the Test phase's job, not an
      implementation row, so do not add a plan row for it. For a UI change, the
      row's testable deliverable is the LiveView/ExUnit test.
+  9. Parity migrations: plan the SHELL and INTEGRATION surface, not just content.
+     The gaps a content-only plan misses live OUTSIDE the component's own file —
+     in the app shell, the sibling pages, the router, and the interaction model.
+     When the reference (e.g. React) renders a portal/sheet/modal, or is imported
+     by more than one page, grep the reference for its call sites and interaction
+     hooks and emit EXPLICIT rows for:
+       - Interaction contract — how it mounts and dismisses: backdrop/scrim (or
+         deliberately none), outside-click, Escape, focus, the back/close control.
+         Name the reference's own guards (e.g. a pointer-down-outside +
+         `isInteractiveTarget` handler) so the worker matches behavior, not guesses.
+       - Responsive contract — what the layout does at each breakpoint, pinning the
+         exact breakpoint token from the reference (do not guess `sm` vs `md`).
+       - Call-site inventory — one row per surface that invokes the component (e.g.
+         a notification bell on each section page), so the affordance exists
+         everywhere the reference puts it, not only on the component's own route.
+       - Routing contract — every URL that opens or closes it, the dismiss
+         destination per entry point, and a safety-net route so a sibling path
+         never crashes (an over-any-section `/:section/inbox`, not a `/:id`
+         fall-through that casts "inbox" as a record id).
+     A cross-cutting component (touches the layout shell or ≥2 sibling pages) is
+     rarely one dispatch: split it along these seams, and say so in `notes`.
 
   Bias the plan toward what the issue body and process docs actually ask
   for. Do not invent rows the issue doesn't request.

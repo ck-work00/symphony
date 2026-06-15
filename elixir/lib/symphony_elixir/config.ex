@@ -75,7 +75,14 @@ defmodule SymphonyElixir.Config do
                                  # project_slug is deprecated — kept in schema for backward compat but unused
                                  project_slug: [type: {:or, [:string, nil]}, default: nil],
                                  filter: [type: {:or, [{:map, :any, :any}, nil]}, default: nil],
+                                 # `assignee` is a ROUTING filter: when set, only issues
+                                 # already assigned to this user are picked up. Leave nil
+                                 # to route by label alone (pick up unassigned issues too).
                                  assignee: [type: {:or, [:string, nil]}, default: nil],
+                                 # `claim_assignee` is who a claimed issue gets ASSIGNED to
+                                 # (user id or email). Independent of routing — set this to a
+                                 # human without restricting which issues are picked up.
+                                 claim_assignee: [type: {:or, [:string, nil]}, default: nil],
                                  active_states: [
                                    type: {:list, :string},
                                    default: @default_active_states
@@ -354,6 +361,17 @@ defmodule SymphonyElixir.Config do
     validated_workflow_options()
     |> get_in([:tracker, :assignee])
     |> resolve_env_value(System.get_env("LINEAR_ASSIGNEE"))
+    |> normalize_secret_value()
+  end
+
+  # Who a claimed issue gets assigned to. Distinct from `linear_assignee/0`,
+  # which is the routing filter — keeping them separate lets us assign claimed
+  # issues to a human without restricting which issues Symphony picks up.
+  @spec linear_claim_assignee() :: String.t() | nil
+  def linear_claim_assignee do
+    validated_workflow_options()
+    |> get_in([:tracker, :claim_assignee])
+    |> resolve_env_value(System.get_env("LINEAR_CLAIM_ASSIGNEE"))
     |> normalize_secret_value()
   end
 
@@ -820,6 +838,7 @@ defmodule SymphonyElixir.Config do
     |> put_if_present(:api_key, binary_value(Map.get(section, "api_key"), allow_empty: true))
     |> put_if_present(:filter, map_value(Map.get(section, "filter")))
     |> put_if_present(:assignee, scalar_string_value(Map.get(section, "assignee")))
+    |> put_if_present(:claim_assignee, scalar_string_value(Map.get(section, "claim_assignee")))
     |> put_if_present(:active_states, csv_value(Map.get(section, "active_states")))
     |> put_if_present(:terminal_states, csv_value(Map.get(section, "terminal_states")))
   end

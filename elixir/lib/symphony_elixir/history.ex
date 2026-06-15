@@ -235,6 +235,29 @@ defmodule SymphonyElixir.History do
   end
 
   @doc """
+  Cumulative input/output/total tokens across an issue's completed runs.
+
+  Each dispatch is its own run row, so summing them gives the issue's true
+  running total even after the in-memory per-attempt counter resets to zero on
+  an agent restart. Used to seed a fresh dispatch so the dashboard keeps
+  counting up instead of dropping back to 0.
+  """
+  @spec issue_token_totals(String.t()) :: %{
+          input_tokens: integer(),
+          output_tokens: integer(),
+          total_tokens: integer()
+        }
+  def issue_token_totals(issue_identifier) when is_binary(issue_identifier) do
+    completed_runs_query(issue_identifier: issue_identifier)
+    |> select([r], %{
+      input_tokens: coalesce(sum(r.input_tokens), 0),
+      output_tokens: coalesce(sum(r.output_tokens), 0),
+      total_tokens: coalesce(sum(r.total_tokens), 0)
+    })
+    |> Repo.one() || %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
+  end
+
+  @doc """
   Most-recent PR URL per issue identifier, from runs that recorded one. Used to
   show an issue's open PR on the dashboard even on a run (running or completed)
   that did not itself detect the URL.

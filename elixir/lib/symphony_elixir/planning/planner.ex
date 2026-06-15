@@ -65,6 +65,15 @@ defmodule SymphonyElixir.Planning.Planner do
      in 1-3 commits. Split big features.
   7. Do NOT defer rows on your own. If a row feels too big, split it. Only
      items the issue body explicitly trims belong in `out_of_scope`.
+  8. Test rows mean in-repo automated tests only — ExUnit/LiveView tests under
+     `test/**/*_test.exs`. These repos have NO in-repo Playwright/Cypress/e2e
+     harness (no `e2e/` dir, no `playwright.config`, no `@playwright` dep), so a
+     row whose deliverable is an `e2e/*.spec.ts` or any browser-spec file would
+     be dead and unrunnable — never emit one. End-to-end browser behavior is
+     verified live in the Test phase by a separate sub-agent driving system
+     Playwright (`npx playwright`); that is the Test phase's job, not an
+     implementation row, so do not add a plan row for it. For a UI change, the
+     row's testable deliverable is the LiveView/ExUnit test.
 
   Bias the plan toward what the issue body and process docs actually ask
   for. Do not invent rows the issue doesn't request.

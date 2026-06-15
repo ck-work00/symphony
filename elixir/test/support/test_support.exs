@@ -97,6 +97,7 @@ defmodule SymphonyElixir.TestSupport do
           tracker_api_token: "token",
           tracker_filter: %{"labels" => %{"include" => ["symphony-agent"]}},
           tracker_assignee: nil,
+          tracker_claim_assignee: nil,
           tracker_active_states: ["Todo", "In Progress"],
           tracker_terminal_states: ["Closed", "Cancelled", "Canceled", "Duplicate", "Done"],
           poll_interval_ms: 30_000,
@@ -135,6 +136,7 @@ defmodule SymphonyElixir.TestSupport do
     tracker_api_token = Keyword.get(config, :tracker_api_token)
     tracker_filter = Keyword.get(config, :tracker_filter)
     tracker_assignee = Keyword.get(config, :tracker_assignee)
+    tracker_claim_assignee = Keyword.get(config, :tracker_claim_assignee)
     tracker_active_states = Keyword.get(config, :tracker_active_states)
     tracker_terminal_states = Keyword.get(config, :tracker_terminal_states)
     poll_interval_ms = Keyword.get(config, :poll_interval_ms)
@@ -174,6 +176,7 @@ defmodule SymphonyElixir.TestSupport do
         "  api_key: #{yaml_value(tracker_api_token)}",
         filter_yaml(tracker_filter),
         "  assignee: #{yaml_value(tracker_assignee)}",
+        "  claim_assignee: #{yaml_value(tracker_claim_assignee)}",
         "  active_states: #{yaml_value(tracker_active_states)}",
         "  terminal_states: #{yaml_value(tracker_terminal_states)}",
         "polling:",

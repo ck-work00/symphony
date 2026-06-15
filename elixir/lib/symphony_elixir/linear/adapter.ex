@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Linear.Client
 
   @create_comment_mutation """
@@ -54,6 +55,16 @@ defmodule SymphonyElixir.Linear.Adapter do
   query SymphonyViewer {
     viewer {
       id
+    }
+  }
+  """
+
+  @assignee_by_email_query """
+  query SymphonyAssigneeByEmail($email: String!) {
+    users(filter: {email: {eq: $email}}) {
+      nodes {
+        id
+      }
     }
   }
   """
@@ -136,7 +147,7 @@ defmodule SymphonyElixir.Linear.Adapter do
   def claim_issue(issue_id, state_name)
       when is_binary(issue_id) and is_binary(state_name) do
     with {:ok, state_id} <- resolve_state_id(issue_id, state_name),
-         {:ok, assignee_id} <- resolve_viewer_id(),
+         {:ok, assignee_id} <- resolve_assignee_id(),
          {:ok, response} <-
            client_module().graphql(@claim_issue_mutation, %{
              issueId: issue_id,
@@ -149,6 +160,42 @@ defmodule SymphonyElixir.Linear.Adapter do
       false -> {:error, :issue_update_failed}
       {:error, reason} -> {:error, reason}
       _ -> {:error, :issue_update_failed}
+    end
+  end
+
+  # Who a claimed issue is assigned to. The orchestrator posts with the
+  # automation key, so `viewer` is the bot — assigning to it hides the work from
+  # the human running Symphony. Prefer the configured human assignee
+  # (`tracker.assignee` / `LINEAR_ASSIGNEE`, a Linear user id or email); fall
+  # back to the API actor only when none is configured.
+  defp resolve_assignee_id do
+    case Config.linear_claim_assignee() do
+      value when is_binary(value) and value != "" -> resolve_configured_assignee(value)
+      _ -> resolve_viewer_id()
+    end
+  end
+
+  defp resolve_configured_assignee(value) do
+    if uuid?(value), do: {:ok, value}, else: resolve_assignee_by_email(value)
+  end
+
+  defp uuid?(value) do
+    Regex.match?(
+      ~r/\A[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\z/,
+      value
+    )
+  end
+
+  defp resolve_assignee_by_email(email) do
+    case client_module().graphql(@assignee_by_email_query, %{email: email}) do
+      {:ok, %{"data" => %{"users" => %{"nodes" => [%{"id" => id} | _]}}}} when is_binary(id) ->
+        {:ok, id}
+
+      {:ok, _} ->
+        {:error, :assignee_not_found}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

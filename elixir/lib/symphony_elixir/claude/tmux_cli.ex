@@ -287,22 +287,44 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
 
   defp session_name(session_id), do: "#{Config.claude_tmux_session_prefix()}-#{session_id}"
 
-  # Claude Code runs in window 0 of the session; target it explicitly.
-  defp pane(session_name), do: "#{session_name}:0"
+  # Claude Code runs in the session's only window. Target the session's
+  # active window (`session:`) rather than a hardcoded index — the first
+  # window is 0 only when the user's tmux config doesn't set `base-index`
+  # (a common customization is `base-index 1`, which made `session:0`
+  # fail with "can't find window: 0").
+  defp pane(session_name), do: "#{session_name}:"
+
+  # Env vars the agent's prompt promises it has. A tmux session inherits the
+  # tmux SERVER's environment, not this BEAM's — so anything Symphony was
+  # launched with (sourced .env) silently vanishes from agent sessions unless
+  # passed explicitly. A tester that was promised $LINEAR_API_KEY_AUTOMATION
+  # and didn't have it went hunting through the macOS keychain and 1Password
+  # for it — deliver on the promise instead.
+  @session_env_passthrough ~w(LINEAR_API_KEY LINEAR_API_KEY_AUTOMATION)
+
+  defp session_env_args do
+    Enum.flat_map(@session_env_passthrough, fn var ->
+      case System.get_env(var) do
+        nil -> []
+        value -> ["-e", "#{var}=#{value}"]
+      end
+    end)
+  end
 
   defp new_tmux_session(session_name, workspace) do
-    args = [
-      "new-session",
-      "-d",
-      "-s",
-      session_name,
-      "-x",
-      Integer.to_string(Config.claude_tmux_width()),
-      "-y",
-      Integer.to_string(Config.claude_tmux_height()),
-      "-c",
-      workspace
-    ]
+    args =
+      [
+        "new-session",
+        "-d",
+        "-s",
+        session_name,
+        "-x",
+        Integer.to_string(Config.claude_tmux_width()),
+        "-y",
+        Integer.to_string(Config.claude_tmux_height()),
+        "-c",
+        workspace
+      ] ++ session_env_args()
 
     case tmux(args) do
       {_, 0} ->
@@ -446,11 +468,17 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
       String.contains?(output, "trust the files")
   end
 
-  # The main TUI footer always shows a "<n> tokens" counter; modal dialogs (trust,
-  # onboarding) do not. Pairing that with the "❯" input marker is a reliable
-  # "ready for a prompt" signal.
+  # "Ready for a prompt" = the "❯" input marker plus a footer line that only
+  # the live main screen shows — modal dialogs (trust, onboarding, the bypass
+  # acceptance warning) render neither. Older Claude Code footers show a
+  # "<n> tokens" counter; newer ones (v2.1.x) dropped it but always show the
+  # permission-mode hint "(shift+tab to cycle)". Accept either, so readiness
+  # detection survives CLI UI changes. ("❯" alone is NOT sufficient — modal
+  # selection menus use it as their cursor.)
   defp input_ready?(output) do
-    String.contains?(output, "❯") and Regex.match?(~r/\d+\s+tokens/, output)
+    String.contains?(output, "❯") and
+      (Regex.match?(~r/\d+\s+tokens/, output) or
+         String.contains?(output, "shift+tab to cycle"))
   end
 
   defp do_await_jsonl(session_id, poll_ms, deadline) do

@@ -94,7 +94,10 @@ defmodule SymphonyElixir.Planning.Grader do
      what the row asked for, the row is `done`.
   9. If a row's diff exists but its test is missing, that row is `partial`,
      not `done`. The contract is "implementation + test", not "implementation
-     alone".
+     alone". Exception: rows whose `tests` list is empty (frontend-only,
+     documentation, research deliverables) — for those the committed artifact
+     itself is the contract; grade on whether the diff delivers what the row
+     describes (sections present, content substantive, references real).
   """
 
   @doc """

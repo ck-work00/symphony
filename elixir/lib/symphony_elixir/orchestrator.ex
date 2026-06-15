@@ -301,6 +301,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
 
+    # Free slots whose lock no longer backs a running issue (e.g. a run that
+    # ended without its slot release firing). Runs every poll so abandoned
+    # locks don't silently shrink effective concurrency.
+    reap_stale_pool_locks(state)
+
     if not Config.within_active_hours?() do
       Logger.debug("Outside active hours, skipping dispatch")
       state
@@ -309,6 +314,16 @@ defmodule SymphonyElixir.Orchestrator do
       |> check_completed_pr_health()
       |> do_dispatch()
     end
+  end
+
+  defp reap_stale_pool_locks(%State{running: running}) do
+    running
+    |> Map.values()
+    |> Enum.map(& &1[:identifier])
+    |> Enum.reject(&is_nil/1)
+    |> Workspace.reap_stale_pool_locks()
+
+    :ok
   end
 
   defp do_dispatch(%State{} = state) do
@@ -847,6 +862,11 @@ defmodule SymphonyElixir.Orchestrator do
         now = DateTime.utc_now()
         history_run_id = record_dispatch_to_history(issue, attempt, now)
 
+        # Tokens already spent on this issue across prior (now-finished) runs.
+        # Seeds the fresh attempt so the dashboard reports the issue's running
+        # total rather than dropping to 0 each time an agent restarts.
+        prior_tokens = History.issue_token_totals(issue.identifier)
+
         running =
           Map.put(state.running, issue.id, %{
             pid: pid,
@@ -861,6 +881,9 @@ defmodule SymphonyElixir.Orchestrator do
             codex_input_tokens: 0,
             codex_output_tokens: 0,
             codex_total_tokens: 0,
+            prior_issue_input_tokens: prior_tokens.input_tokens,
+            prior_issue_output_tokens: prior_tokens.output_tokens,
+            prior_issue_total_tokens: prior_tokens.total_tokens,
             codex_last_reported_input_tokens: 0,
             codex_last_reported_output_tokens: 0,
             codex_last_reported_total_tokens: 0,
@@ -1767,6 +1790,9 @@ defmodule SymphonyElixir.Orchestrator do
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
           codex_total_tokens: metadata.codex_total_tokens,
+          cumulative_input_tokens: Map.get(metadata, :prior_issue_input_tokens, 0) + metadata.codex_input_tokens,
+          cumulative_output_tokens: Map.get(metadata, :prior_issue_output_tokens, 0) + metadata.codex_output_tokens,
+          cumulative_total_tokens: Map.get(metadata, :prior_issue_total_tokens, 0) + metadata.codex_total_tokens,
           turn_count: Map.get(metadata, :turn_count, 0),
           started_at: metadata.started_at,
           last_codex_timestamp: metadata.last_codex_timestamp,

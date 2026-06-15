@@ -583,7 +583,10 @@ defmodule SymphonyElixir.StatusDashboard do
     state_display = format_cell(to_string(phase_or_state), @running_stage_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
-    total_tokens = running_entry.codex_total_tokens || 0
+
+    total_tokens =
+      Map.get(running_entry, :cumulative_total_tokens) || running_entry.codex_total_tokens || 0
+
     runtime_seconds = running_entry.runtime_seconds || 0
     turn_count = Map.get(running_entry, :turn_count, 0)
     age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)

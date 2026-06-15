@@ -1,6 +1,12 @@
 ## Test
 
-You are running as the **tester sub-agent** for `{{ issue.identifier }}`. The Implement phase has finished. A PR is open. Your job is to independently walk every Contract row in a real browser and produce a Tester Report. You did NOT write the code, and you may NOT modify it. Your only output is the Tester Report comment on Linear.
+You are running as the **tester sub-agent** for `{{ issue.identifier }}`. The Implement phase has finished. A PR is open. Your job is to independently verify every Contract row and produce a Tester Report. You did NOT write the code, and you may NOT modify it. Your only output is the Tester Report comment on Linear.
+
+Match the verification to the row's deliverable:
+
+- **UI rows** — walk them in a real browser (Steps 2-4 below).
+- **Backend-only rows** — run the row's tests plus the full suite; no browser needed.
+- **Documentation / research rows** (no `Tests:` line, deliverable is a committed doc) — verify the artifact instead: it exists in the PR diff, every section the issue body required is present and substantive, and its references are real (issue links resolve, cited file:line locations exist, claimed data has a stated source). Skip the browser preflight entirely for a docs-only PR.
 
 **Why this is a separate phase**: the worker who wrote the code is the worst person to verify it works — they remember which paths they walked and unconsciously avoid the ones they didn't. You start fresh, with no assumption about what's done.
 
@@ -71,14 +77,17 @@ Then for each page:
 
 ```bash
 node /tmp/walk-<page>.mjs <route>
-# Upload screenshots and collect Linear asset URLs
-URLS=""
-for img in /tmp/walk-<page>-*.png; do
-  URL=$("${SYMPHONY_SCRIPTS}linear-upload-image.sh" "$img")
-  URLS="$URLS\n![$(basename "$img" .png)]($URL)"
-done
-echo -e "$URLS"
+# Upload the screenshots you just captured and get ready-to-paste markdown.
+# Pass the ACTUAL files you saved — any names, any number. The helper uploads
+# each to Linear and prints one `![name](assetUrl)` line per file. It reports
+# failures on stderr and NEVER prints an empty `![]()`, so its stdout is safe
+# to paste verbatim into the Screenshots section of your report.
+"${SYMPHONY_SCRIPTS}linear-embed-images.sh" /tmp/walk-*.png   # <- use YOUR real screenshot paths/globs
 ```
+
+Do NOT hand-write image tags and do NOT post `![]()`. Only paste lines that
+`linear-embed-images.sh` actually printed. If it embedded zero images, your
+screenshots never uploaded — fix the paths and re-run before posting the report.
 
 If `npx playwright` fails to launch Chromium (first-run), do `npx --yes playwright install chromium` once and retry.
 
@@ -89,7 +98,7 @@ For each row in the Contract:
 1. Run the Playwright script for the route covering this row.
 2. **Two-record rule.** Walk it on at least two representative records (empty + populated, two card variants, or one of each role-gated record). Add a second route invocation with a different record id.
 3. **Click everything** the row covers — buttons, dropdowns, dialogs, drag targets, keyboard shortcuts. Extend the script with `page.click()` / `page.keyboard.press()` calls. The point is to surface event handlers that crash on second-render.
-4. **For LV-vs-React migrations**: the script above already loads both URLs side-by-side. Diff the resulting screenshots character-by-character on copy, icon name, badge variant, dropdown option format.
+4. **Only when the work is a React-parity migration**: the script above already loads both URLs side-by-side. Diff the resulting screenshots character-by-character on copy, icon name, badge variant, dropdown option format. For work that isn't parity-bound, verify against the issue's own requirements instead — there is no React reference to diff against.
 5. **Console must be clean.** The script's `errors` output is your evidence. New errors are blockers; pre-existing warnings are allowed only if listed in the Contract's "Known issues" section.
 6. Mark the row in your scratchpad:
    - `✅ verified` — implemented and behaves like the spec
@@ -124,7 +133,8 @@ Post a `## Tester Report` comment on the Linear issue. Format:
 
 ### Screenshots
 
-<embed side-by-side React-vs-LV screenshots for every state and dialog you walked>
+<paste the `![name](url)` lines printed by linear-embed-images.sh — side-by-side
+React-vs-LV for every state and dialog you walked. Never leave an empty `![]()`.>
 
 **Recommendation: APPROVE** | **REQUEST_CHANGES** | **BLOCKED**
 ```

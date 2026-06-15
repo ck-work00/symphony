@@ -881,4 +881,95 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
     assert Config.workflow_prompt() == workflow_prompt
   end
+
+  describe "tracker.claim_assignee" do
+    test "is read from the workflow file" do
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_claim_assignee: "human@example.com")
+
+      assert Config.linear_claim_assignee() == "human@example.com"
+    end
+
+    test "is nil when unset and no env override" do
+      previous = System.get_env("LINEAR_CLAIM_ASSIGNEE")
+      on_exit(fn -> restore_env("LINEAR_CLAIM_ASSIGNEE", previous) end)
+      System.delete_env("LINEAR_CLAIM_ASSIGNEE")
+
+      write_workflow_file!(Workflow.workflow_file_path(), tracker_claim_assignee: nil)
+
+      assert Config.linear_claim_assignee() == nil
+    end
+  end
+
+  describe "reap_stale_pool_locks/1 registry-lease reaper" do
+    setup do
+      root = Path.join(System.tmp_dir!(), "symphony-reaper-#{System.unique_integer([:positive])}")
+      registry = Path.join([root, "local-dev", "registry"])
+      File.mkdir_p!(registry)
+
+      prev = %{
+        gearflow_workspace: System.get_env("GEARFLOW_WORKSPACE"),
+        scripts: System.get_env("SYMPHONY_SCRIPTS"),
+        platform_slots: System.get_env("SYMPHONY_PLATFORM_SLOTS"),
+        procurement_slots: System.get_env("SYMPHONY_PROCUREMENT_SLOTS")
+      }
+
+      System.put_env("GEARFLOW_WORKSPACE", root)
+      System.delete_env("SYMPHONY_SCRIPTS")
+      System.put_env("SYMPHONY_PLATFORM_SLOTS", "4 5 6")
+      System.put_env("SYMPHONY_PROCUREMENT_SLOTS", "4 5 6")
+
+      on_exit(fn ->
+        restore_env("GEARFLOW_WORKSPACE", prev.gearflow_workspace)
+        restore_env("SYMPHONY_SCRIPTS", prev.scripts)
+        restore_env("SYMPHONY_PLATFORM_SLOTS", prev.platform_slots)
+        restore_env("SYMPHONY_PROCUREMENT_SLOTS", prev.procurement_slots)
+        File.rm_rf(root)
+      end)
+
+      {:ok, root: root, registry: registry}
+    end
+
+    test "reaps only orphaned symphony-owned leases on eligible slots", %{registry: registry} do
+      old = "2025-01-01T00:00:00Z"
+      recent = DateTime.utc_now() |> DateTime.add(-10, :second) |> DateTime.to_iso8601()
+
+      put_lease(registry, "gf_platform-slot4", owner: "symphony", linear_issue: "GEA-ORPHAN", claimed: old)
+      put_lease(registry, "gf_platform-slot5", owner: "symphony", linear_issue: "GEA-ACTIVE", claimed: old)
+      put_lease(registry, "gf_platform-slot6", owner: "sess-human", linear_issue: "GEA-HUMAN", claimed: old)
+      put_lease(registry, "gf_procurement-slot4", owner: "symphony", linear_issue: "GEA-RECENT", claimed: recent)
+      put_lease(registry, "gf_procurement-slot1", owner: "symphony", linear_issue: "GEA-INELIGIBLE", claimed: old)
+
+      {reaped, _log} = with_log(fn -> Workspace.reap_stale_pool_locks(["GEA-ACTIVE"]) end)
+
+      assert reaped == ["gf_platform-slot4"]
+
+      refute lease_exists?(registry, "gf_platform-slot4")
+      assert lease_exists?(registry, "gf_platform-slot5"), "active issue's lease must survive"
+      assert lease_exists?(registry, "gf_platform-slot6"), "non-symphony (human) lease must never be touched"
+      assert lease_exists?(registry, "gf_procurement-slot4"), "within-grace lease must survive"
+      assert lease_exists?(registry, "gf_procurement-slot1"), "ineligible slot must survive"
+    end
+
+    test "keeps the lease when the slot reset fails", %{root: root, registry: registry} do
+      old = "2025-01-01T00:00:00Z"
+
+      # A non-git directory makes the reset commands fail, so the lease must NOT
+      # be freed — otherwise a dirty slot would become reclaimable.
+      File.mkdir_p!(Path.join([root, "local-dev", "gf_platform-slot4"]))
+      put_lease(registry, "gf_platform-slot4", owner: "symphony", linear_issue: "GEA-ORPHAN", claimed: old)
+
+      with_log(fn -> Workspace.reap_stale_pool_locks([]) end)
+
+      assert lease_exists?(registry, "gf_platform-slot4"),
+             "lease must remain when the slot could not be reset to a clean state"
+    end
+  end
+
+  defp put_lease(registry, slot_name, fields) do
+    File.write!(Path.join(registry, slot_name <> ".json"), Jason.encode!(Map.new(fields)))
+  end
+
+  defp lease_exists?(registry, slot_name) do
+    File.exists?(Path.join(registry, slot_name <> ".json"))
+  end
 end

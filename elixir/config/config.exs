@@ -11,6 +11,10 @@ config :symphony_elixir, SymphonyElixir.Repo,
 config :symphony_elixir,
   ecto_repos: [SymphonyElixir.Repo]
 
+# In test, bind an ephemeral port so the suite never collides with a running
+# dev server (which holds the workflow-configured port).
+if config_env() == :test, do: config(:symphony_elixir, server_port_override: 0)
+
 config :symphony_elixir, SymphonyElixirWeb.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],

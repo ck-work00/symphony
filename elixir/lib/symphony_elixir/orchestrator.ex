@@ -305,6 +305,7 @@ defmodule SymphonyElixir.Orchestrator do
     # ended without its slot release firing). Runs every poll so abandoned
     # locks don't silently shrink effective concurrency.
     reap_stale_pool_locks(state)
+    reap_orphan_tmux_sessions(state)
 
     if not Config.within_active_hours?() do
       Logger.debug("Outside active hours, skipping dispatch")
@@ -322,6 +323,27 @@ defmodule SymphonyElixir.Orchestrator do
     |> Enum.map(& &1[:identifier])
     |> Enum.reject(&is_nil/1)
     |> Workspace.reap_stale_pool_locks()
+
+    :ok
+  end
+
+  # Kill tmux Claude sessions that no longer back a running worker — the safety
+  # net for sessions leaked when a worker was terminated without its
+  # `stop_session/1` cleanup firing (see `terminate_running_issue/4`). Scoped to
+  # the running set so a live worker's session is never reaped.
+  defp reap_orphan_tmux_sessions(%State{running: running}) do
+    active_session_ids =
+      running
+      |> Map.values()
+      |> Enum.map(& &1[:session_id])
+      |> Enum.reject(&is_nil/1)
+
+    # 120s grace: a just-launched worker's tmux session exists before its
+    # session_id propagates into `running`, so don't reap young sessions.
+    case SymphonyElixir.Claude.TmuxCLI.reap_orphan_sessions_except(active_session_ids, min_age_seconds: 120) do
+      [] -> :ok
+      reaped -> Logger.info("Reaped #{length(reaped)} orphaned Claude tmux session(s): #{inspect(reaped)}")
+    end
 
     :ok
   end
@@ -505,6 +527,12 @@ defmodule SymphonyElixir.Orchestrator do
         if is_pid(pid) do
           terminate_task(pid)
         end
+
+        # Killing the BEAM task is not enough: the worker's Claude runs in a
+        # tmux session that outlives the task (the runner's `after`-block
+        # cleanup doesn't fire under an external kill). Kill it explicitly so a
+        # terminated/restarted worker can't keep editing its slot.
+        SymphonyElixir.Claude.TmuxCLI.kill_by_session_id(Map.get(running_entry, :session_id))
 
         if is_reference(ref) do
           Process.demonitor(ref, [:flush])
@@ -979,6 +1007,14 @@ defmodule SymphonyElixir.Orchestrator do
               :ok ->
                 :done
 
+              {:ci, reason} ->
+                # CI is red. Dispatch the dedicated Fix CI phase — its prompt
+                # pulls the actual failing job logs and reproduces locally,
+                # instead of a generic Implement row-closer that only sees the
+                # failing check names and never learns what broke.
+                Logger.info("Tester approved #{issue.identifier} but CI is red; dispatching Fix CI: #{reason}")
+                reopen_and_dispatch(issue, metadata, plan, reason, "Fix CI")
+
               {:request_changes, reason} ->
                 Logger.info("Tester approved #{issue.identifier} but ship gate blocks: #{reason}")
                 reopen_and_dispatch(issue, metadata, plan, reason)
@@ -1037,14 +1073,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   # Record a Dispatch and build the metadata for an Implement row-closer dispatch.
-  defp dispatch_implement(issue, metadata, plan, rows, why) do
+  defp dispatch_implement(issue, metadata, plan, rows, why, phase \\ "Implement") do
     case SymphonyElixir.Planning.Workflow.start_implement_dispatch(plan, rows) do
       {:ok, dispatch} ->
-        Logger.info("Dispatching Implement row-closer for #{issue.identifier} (#{why}, #{length(rows)} rows)")
+        Logger.info("Dispatching #{phase} row-closer for #{issue.identifier} (#{why}, #{length(rows)} rows)")
 
         metadata =
           metadata
-          |> Map.put(:retask_phases, ["Implement"])
+          |> Map.put(:retask_phases, [phase])
           |> Map.put(:assigned_rows, rows)
           |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
           |> Map.put(:plan_dispatch_id, dispatch.id)
@@ -1060,11 +1096,11 @@ defmodule SymphonyElixir.Orchestrator do
   # `reason` (a tester REQUEST_CHANGES, a CI failure, or a requested-changes
   # review). The Grader re-verifies on the next completion, snapping untouched
   # rows back to done.
-  defp reopen_and_dispatch(issue, metadata, plan, reason) do
+  defp reopen_and_dispatch(issue, metadata, plan, reason, phase \\ "Implement") do
     case reopen_done_rows(plan, reason) do
       {:ok, reopened} ->
         open = SymphonyElixir.Planning.Plan.open_rows(reopened)
-        dispatch_implement(issue, metadata, reopened, open, reason)
+        dispatch_implement(issue, metadata, reopened, open, reason, phase)
 
       {:error, err} ->
         {:blocked, {:reopen_rows_failed, err}}
@@ -1098,7 +1134,7 @@ defmodule SymphonyElixir.Orchestrator do
 
         case failed_checks(output) do
           [] -> :ok
-          names -> {:request_changes, "CI checks failing: #{Enum.join(names, ", ")}"}
+          names -> {:ci, "CI checks failing: #{Enum.join(names, ", ")}"}
         end
 
       :error ->

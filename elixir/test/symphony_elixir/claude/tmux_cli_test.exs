@@ -110,4 +110,58 @@ defmodule SymphonyElixir.Claude.TmuxCLITest do
                )
     end
   end
+
+  describe "reap_orphan_sessions_except/2 and kill_by_session_id/1" do
+    @describetag :tmux
+
+    setup do
+      prefix = "symphonytest#{System.unique_integer([:positive])}"
+      {:ok, prefix: prefix}
+    end
+
+    defp new_session(name) do
+      on_exit(fn -> System.cmd("tmux", ["kill-session", "-t", name], stderr_to_stdout: true) end)
+      {_, 0} = System.cmd("tmux", ["new-session", "-d", "-s", name], stderr_to_stdout: true)
+      name
+    end
+
+    test "keeps sessions whose session_id is in the keep set", %{prefix: prefix} do
+      keep_id = "#{System.unique_integer([:positive])}"
+      drop_id = "#{System.unique_integer([:positive])}"
+      keep_name = new_session("#{prefix}-#{keep_id}")
+      drop_name = new_session("#{prefix}-#{drop_id}")
+
+      assert TmuxCLI.reap_orphan_sessions_except([keep_id], prefix: prefix) == [drop_name]
+      assert {_, 0} = System.cmd("tmux", ["has-session", "-t", keep_name], stderr_to_stdout: true)
+      assert {_, code} = System.cmd("tmux", ["has-session", "-t", drop_name], stderr_to_stdout: true)
+      assert code != 0
+    end
+
+    test "does not reap a young session when min_age_seconds is set", %{prefix: prefix} do
+      # The race guard: a just-launched worker's session exists before its
+      # session_id reaches the running map, so a grace window must spare it.
+      name = new_session("#{prefix}-#{System.unique_integer([:positive])}")
+
+      assert TmuxCLI.reap_orphan_sessions_except([], prefix: prefix, min_age_seconds: 120) == []
+      assert {_, 0} = System.cmd("tmux", ["has-session", "-t", name], stderr_to_stdout: true)
+
+      # Same session reaps once the age floor is removed.
+      assert TmuxCLI.reap_orphan_sessions_except([], prefix: prefix) == [name]
+    end
+
+    test "kill_by_session_id kills the matching session and is idempotent" do
+      # kill_by_session_id derives the name from the configured prefix, so build
+      # the session under that same prefix (unique id avoids any real session).
+      prefix = Config.claude_tmux_session_prefix()
+      session_id = "killtest-#{System.unique_integer([:positive])}"
+      name = new_session("#{prefix}-#{session_id}")
+
+      assert :ok = TmuxCLI.kill_by_session_id(session_id)
+      assert {_, code} = System.cmd("tmux", ["has-session", "-t", name], stderr_to_stdout: true)
+      assert code != 0
+      # Idempotent: killing an already-gone session is still :ok.
+      assert :ok = TmuxCLI.kill_by_session_id(session_id)
+      assert :ok = TmuxCLI.kill_by_session_id(nil)
+    end
+  end
 end

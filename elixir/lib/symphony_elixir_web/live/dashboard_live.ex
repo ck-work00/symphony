@@ -8,13 +8,15 @@ defmodule SymphonyElixirWeb.DashboardLive do
   alias SymphonyElixir.{History, Orchestrator}
   alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
   @runtime_tick_ms 1_000
-  @phase_order ["Investigate", "Implement", "Test", "Ship", "Share Evidence"]
+  @payload_debounce_ms 250
+  @phase_order ["Investigate", "Implement", "Test", "Ship", "Share Evidence", "Fix CI"]
 
   @impl true
   def mount(_params, _session, socket) do
     socket =
       socket
       |> assign(:payload, load_payload())
+      |> assign(:flush_scheduled, false)
       |> assign(:now, DateTime.utc_now())
       |> assign(:active_tab, "live")
       |> assign(:history_runs, [])
@@ -98,11 +100,27 @@ defmodule SymphonyElixirWeb.DashboardLive do
   end
 
   @impl true
+  # Debounce update broadcasts instead of reloading on every one. The
+  # orchestrator broadcasts on every codex token delta (many per second per
+  # worker); without this, each re-runs the payload query — `pr_urls_by_issue`
+  # scans 200 rows — that many times on every open dashboard. Coalesce a burst
+  # into one reload ~250ms after the first message: bounds the query to ≤4/s
+  # while staying responsive.
   def handle_info(:observability_updated, socket) do
+    if socket.assigns.flush_scheduled do
+      {:noreply, socket}
+    else
+      Process.send_after(self(), :flush_payload, @payload_debounce_ms)
+      {:noreply, assign(socket, :flush_scheduled, true)}
+    end
+  end
+
+  @impl true
+  def handle_info(:flush_payload, socket) do
     {:noreply,
      socket
      |> assign(:payload, load_payload())
-     |> assign(:now, DateTime.utc_now())}
+     |> assign(:flush_scheduled, false)}
   end
 
   @impl true
@@ -285,7 +303,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
                     <td>
                       <div class="phase-steps">
                         <span
-                          :for={step <- ["Investigate", "Implement", "Test", "Ship", "Share Evidence"]}
+                          :for={step <- ["Investigate", "Implement", "Test", "Ship", "Share Evidence", "Fix CI"]}
                           class={phase_step_class(step, entry[:phase])}
                           title={step}
                         >

@@ -128,6 +128,25 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
     :ok
   end
 
+  @doc """
+  Force-kill the tmux session for `session_id` without the graceful `/exit`
+  wait. Idempotent — safe when the session is already gone.
+
+  The orchestrator calls this when it terminates a worker (stall restart,
+  terminal state, etc.): killing the BEAM task alone leaves the tmux-hosted
+  Claude running, so without this the agent keeps editing the slot after it's
+  been "replaced" — stacking concurrent writers on one non-isolated checkout.
+  """
+  @spec kill_by_session_id(String.t() | nil) :: :ok
+  def kill_by_session_id(session_id) when is_binary(session_id) and session_id != "" do
+    name = session_name(session_id)
+    kill_session(name)
+    cleanup_prompt_files(session_id)
+    :ok
+  end
+
+  def kill_by_session_id(_), do: :ok
+
   @doc "True if the tmux session still exists."
   @spec alive?(session_handle() | String.t()) :: boolean()
   def alive?(%{session_name: session_name}), do: alive?(session_name)
@@ -178,15 +197,44 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
   running (returns `[]`).
   """
   @spec reap_orphan_sessions(String.t()) :: [String.t()]
-  def reap_orphan_sessions(prefix \\ nil) do
-    prefix = prefix || Config.claude_tmux_session_prefix()
+  def reap_orphan_sessions(prefix \\ nil), do: reap_orphan_sessions_except([], prefix: prefix)
 
-    case tmux(["list-sessions", "-F", "#S"]) do
+  @doc """
+  Reap Symphony tmux sessions whose session_id is NOT in `keep_session_ids`.
+
+  The orchestrator calls this every poll with the session_ids of its currently
+  running workers, so a session leaked mid-run (a worker killed without its
+  `stop_session/1` cleanup firing) gets cleaned up within one poll instead of
+  surviving until the next BEAM restart. Mirrors `reap_stale_pool_locks` for
+  slot locks. `keep_session_ids` may be a list or MapSet.
+
+  Options:
+
+    * `:prefix` — session-name prefix (defaults to the configured one).
+    * `:min_age_seconds` — only reap sessions at least this old (default `0`,
+      reap regardless of age — what the startup reaper wants). The periodic
+      caller passes a grace window so a just-launched worker, whose tmux session
+      exists before its session_id has propagated into the running map, is not
+      mistaken for a leak and killed.
+
+  Returns the list of session names reaped. Safe when no tmux server is running.
+  """
+  @spec reap_orphan_sessions_except(Enumerable.t(), keyword()) :: [String.t()]
+  def reap_orphan_sessions_except(keep_session_ids, opts \\ []) do
+    prefix = opts[:prefix] || Config.claude_tmux_session_prefix()
+    min_age = opts[:min_age_seconds] || 0
+    keep = MapSet.new(keep_session_ids)
+    now = System.os_time(:second)
+
+    case tmux(["list-sessions", "-F", "#S\t\#{session_created}"]) do
       {output, 0} ->
         output
         |> String.split("\n", trim: true)
-        |> Enum.filter(&String.starts_with?(&1, prefix <> "-"))
-        |> Enum.map(fn name ->
+        |> Enum.map(&parse_session_line/1)
+        |> Enum.filter(fn {name, _created} -> String.starts_with?(name, prefix <> "-") end)
+        |> Enum.reject(fn {name, _} -> MapSet.member?(keep, session_id_from_name(name, prefix)) end)
+        |> Enum.filter(fn {_name, created} -> old_enough?(created, now, min_age) end)
+        |> Enum.map(fn {name, _created} ->
           kill_session(name)
           cleanup_prompt_files(session_id_from_name(name, prefix))
           name
@@ -197,6 +245,28 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
         []
     end
   end
+
+  # Splits "name\t<epoch>" from tmux; created is nil when the field is absent.
+  defp parse_session_line(line) do
+    case String.split(line, "\t", parts: 2) do
+      [name, created] -> {name, parse_epoch(created)}
+      [name] -> {name, nil}
+    end
+  end
+
+  defp parse_epoch(str) do
+    case Integer.parse(String.trim(str)) do
+      {epoch, _} -> epoch
+      :error -> nil
+    end
+  end
+
+  # min_age 0 → reap regardless of age (startup). Otherwise require a known
+  # creation time older than the grace window; unknown age → don't reap (a
+  # live worker is never worth the risk).
+  defp old_enough?(_created, _now, min_age) when min_age <= 0, do: true
+  defp old_enough?(nil, _now, _min_age), do: false
+  defp old_enough?(created, now, min_age), do: now - created >= min_age
 
   # ---------------------------------------------------------------------------
   # Internals

@@ -95,6 +95,13 @@ The dashboard only shows issue identifiers (e.g. GEA-2631). Show the issue title
 ## Dashboard polling overhead
 When the dashboard LiveView is open, it polls `run_events` every second per expanded timeline. This hammers the SQLite DB with redundant queries. Should debounce or only poll when timeline is expanded.
 
+## Orchestrator snapshot timeouts ("Snapshot unavailable")
+The dashboard and TUI fetch status via `Orchestrator.snapshot()` → `GenServer.call(:snapshot, 15_000)`. The `:snapshot` handler is trivial (it just reads state), but the orchestrator is a single GenServer that runs its **entire poll cycle in-process**: Linear HTTP (`Tracker.fetch_candidate_issues` / `fetch_issue_states`), plan generation (`Planning.Workflow.assess` — one LLM call), and dispatch grading (`maybe_grade_plan_dispatch` — another LLM call). A GenServer handles one message at a time, so while a poll cycle is blocked on a slow LLM grade/plan (routinely >15s, worse under churn), the `:snapshot` call sits in the mailbox until it times out → `snapshot_payload` returns `:error` → "Snapshot unavailable / Snapshot timed out". Intermittent — only fires when a refresh lands during a slow cycle.
+
+Fix:
+- Proper: move the blocking poll-cycle work (LLM grade/plan, Linear calls, worker dispatch) into supervised `Task`s so the GenServer stays responsive to `:snapshot` and the other status/control calls.
+- Cheap interim: raise the snapshot timeout above the worst-case grade time, and/or render the **last-known** snapshot on timeout (the dashboard already tracks `last_snapshot_fingerprint`) instead of erroring — shows slightly-stale status rather than "unavailable".
+
 ## Add OpenCode as an alternative agent backend
 Symphony's agent layer is already abstracted behind `Config.agent_runner_module()` (claude → `Claude.AgentRunner`, default → legacy Codex runner). Adding sst/opencode as a third backend is mostly mirroring the Claude modules.
 

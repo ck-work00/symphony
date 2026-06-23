@@ -211,7 +211,9 @@ If a PR already exists for this issue, run this checklist:
 2. **CI failures**: Check with `gh pr checks <number>`. If any fail, fix the code and push.
 3. **Code review comments**: Check with `gh pr view <number> --comments` and `gh api repos/{owner}/{repo}/pulls/{number}/reviews`. Triage and address actionable feedback, then push.
 4. **Incomplete testing**: If issue comments indicate testing gaps, go back to Phase 4 (Test).
-5. **All clear**: If CI is green, no conflicts, reviews are addressed, and testing is confirmed — you are done.
+5. **All clear**: If CI is green, no conflicts, and reviews are addressed, push and stop.
+   Do NOT decide the issue is "done" or run `gh pr ready` — the grader decides completion
+   and a human promotes the draft.
 
 After fixing any issues, re-run Phase 4 (Test) to verify nothing broke, then push.
 

@@ -838,15 +838,39 @@ defmodule SymphonyElixir.Orchestrator do
     # the issue, or block it for a human.
     case plan_action(issue, metadata) do
       {:dispatch, metadata} ->
+        # Work remains: keep the PR a draft (undo a worker that promoted it early).
+        enforce_pr_draft(issue, true)
         spawn_worker(state, issue, attempt, metadata)
 
       :done ->
         Logger.info("Plan complete and tester-approved for #{issue_context(issue)}; completing issue")
+        # Plan graded complete: now promote the draft to ready-for-review.
+        enforce_pr_draft(issue, false)
         complete_issue(state, issue.id)
 
       {:blocked, reason} ->
         block_issue_for_plan_failure(state, issue, reason)
     end
+  end
+
+  # Keep a worker's PR draft until the plan grades complete, then promote it.
+  # Best-effort + off the orchestrator loop: never let a gh hiccup stall dispatch.
+  defp enforce_pr_draft(issue, want_draft?) do
+    identifier = Map.get(issue, :identifier)
+    branch = Map.get(issue, :branch_name) || identifier
+
+    if is_binary(identifier) do
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        try do
+          Evaluator.set_pr_draft(Workspace.scratch_path(identifier), branch, want_draft?)
+        rescue
+          error ->
+            Logger.warning("enforce_pr_draft failed for #{identifier}: #{Exception.message(error)}")
+        end
+      end)
+    end
+
+    :ok
   end
 
   defp spawn_worker(%State{} = state, issue, attempt, metadata) do

@@ -138,6 +138,34 @@ defmodule SymphonyElixir.Evaluator do
   # Individual checks
   # ---------------------------------------------------------------------------
 
+  @doc """
+  Force the PR for `branch` in `workspace_path` to draft (`want_draft? = true`) or
+  ready-for-review (`false`). Idempotent and best-effort: a no-op when there is no
+  PR or no workspace. This is how the orchestrator keeps a worker's PR a draft
+  until the plan is graded complete — workers must never promote their own PR.
+  """
+  @spec set_pr_draft(String.t() | nil, String.t() | nil, boolean()) :: :ok
+  def set_pr_draft(workspace_path, branch, want_draft?) do
+    ws = resolve_workspace_path(workspace_path)
+
+    branch =
+      case detect_current_branch(ws) do
+        {:ok, current} -> current
+        _ -> branch
+      end
+
+    case check_pr(ws, branch) do
+      %{exists: true, number: num} when is_integer(num) ->
+        flag = if want_draft?, do: " --undo", else: ""
+        run_in_workspace(ws, "gh pr ready #{num}#{flag} 2>/dev/null")
+        Logger.info("Evaluator: set PR ##{num} draft=#{want_draft?}")
+        :ok
+
+      _ ->
+        :ok
+    end
+  end
+
   defp check_pr(workspace_path, branch) do
     case run_in_workspace(workspace_path, "gh pr list --head #{safe_arg(branch)} --json url,number,state --limit 1") do
       {:ok, output} ->

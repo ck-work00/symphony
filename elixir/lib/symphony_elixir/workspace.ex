@@ -416,6 +416,25 @@ defmodule SymphonyElixir.Workspace do
     end)
   end
 
+  @doc """
+  `{slot_working_copy_dir, branch}` for the slot currently leased to `identifier`,
+  or nil. Read straight from the registry lease — reliable even when the scratch
+  workspace's `.symphony_slot` is gone between dispatches, or the slot tree is
+  parked on `main`. Used to act on the issue's PR from a real repo checkout.
+  """
+  @spec slot_lease_for_issue(String.t() | nil) :: {Path.t(), String.t()} | nil
+  def slot_lease_for_issue(identifier) when is_binary(identifier) do
+    ld = local_dev_dir()
+
+    Enum.find_value(registry_leases(), fn {slot_name, lease} ->
+      if is_binary(ld) and to_string(lease["linear_issue"]) == identifier do
+        {Path.join(ld, slot_name), to_string(lease["branch"])}
+      end
+    end)
+  end
+
+  def slot_lease_for_issue(_), do: nil
+
   @doc "Scratch workspace path for an issue identifier (resolve the slot via `.symphony_slot`)."
   @spec scratch_path(String.t() | nil) :: Path.t() | nil
   def scratch_path(identifier) when is_binary(identifier),

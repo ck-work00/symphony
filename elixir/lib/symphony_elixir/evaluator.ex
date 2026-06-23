@@ -148,12 +148,9 @@ defmodule SymphonyElixir.Evaluator do
   def set_pr_draft(workspace_path, branch, want_draft?) do
     ws = resolve_workspace_path(workspace_path)
 
-    branch =
-      case detect_current_branch(ws) do
-        {:ok, current} -> current
-        _ -> branch
-      end
-
+    # Use the issue's branch as given — `gh pr list --head <branch>` matches the
+    # PR's head regardless of what the local checkout is on, so this works even
+    # when the slot tree is parked on main between dispatches.
     case check_pr(ws, branch) do
       %{exists: true, number: num} when is_integer(num) ->
         flag = if want_draft?, do: " --undo", else: ""

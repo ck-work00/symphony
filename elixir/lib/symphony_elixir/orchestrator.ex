@@ -857,12 +857,17 @@ defmodule SymphonyElixir.Orchestrator do
   # Best-effort + off the orchestrator loop: never let a gh hiccup stall dispatch.
   defp enforce_pr_draft(issue, want_draft?) do
     identifier = Map.get(issue, :identifier)
-    branch = Map.get(issue, :branch_name) || identifier
 
     if is_binary(identifier) do
       Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
         try do
-          Evaluator.set_pr_draft(Workspace.scratch_path(identifier), branch, want_draft?)
+          case Workspace.slot_lease_for_issue(identifier) do
+            {slot_dir, branch} when is_binary(branch) and branch != "" ->
+              Evaluator.set_pr_draft(slot_dir, branch, want_draft?)
+
+            _ ->
+              :ok
+          end
         rescue
           error ->
             Logger.warning("enforce_pr_draft failed for #{identifier}: #{Exception.message(error)}")

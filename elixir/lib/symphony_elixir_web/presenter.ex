@@ -19,8 +19,15 @@ defmodule SymphonyElixirWeb.Presenter do
           History.pr_urls_by_issue()
           |> Map.merge(detected_pr_urls(snapshot.running ++ completed))
 
+        # When the live snapshot timed out behind a slow poll cycle, Orchestrator
+        # serves the last-known one tagged with :stale_age_ms. Surface it instead
+        # of erroring — slightly-stale beats "Snapshot unavailable".
+        stale_age_ms = Map.get(snapshot, :stale_age_ms)
+
         %{
           generated_at: generated_at,
+          stale: stale_age_ms != nil,
+          stale_age_ms: stale_age_ms,
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying)

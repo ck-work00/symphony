@@ -76,6 +76,16 @@ defmodule SymphonyElixir.Planning.Grader do
      module/namespace, same described feature in the row description),
      count it as covering the row. Don't mark a row "missing" just because
      the literal path string isn't in the diff.
+     **Whole-namespace mismatch (common).** The Planner often emits
+     stock-Phoenix paths (`lib/app/…`, `lib/app_web/…`, `test/app/…`) for a
+     repo that actually uses a different namespace (`lib/gf/…`,
+     `lib/gf_web/…`, etc.). When the plan's namespace does not appear in the
+     diff at ALL, do not try to line paths up — drop `touches` entirely and
+     grade the row purely on (a) its description vs. the diff's actual files
+     and content, (b) the commit subjects, and (c) the test output. A
+     namespace-wrong `touches` path is never, by itself, grounds for
+     "missing": the question is whether the described work landed, not
+     whether it landed at the guessed path.
   7. **Commit subjects are first-class evidence.** A commit subject like
      `GEA-2772: C03-maintenance-view — inline editors` directly closes
      row `C03-maintenance-view`. Use commit subjects to confirm row
@@ -153,7 +163,7 @@ defmodule SymphonyElixir.Planning.Grader do
     sections = [
       "## Plan (full context)\n\n```json\n#{Jason.encode!(plan_rows, pretty: true)}\n```",
       "## Rows assigned to this dispatch\n\n```json\n#{Jason.encode!(assigned, pretty: true)}\n```",
-      "## Branch state vs base\n\nThis is a structured summary (file list + commit subjects + diff stats), NOT a full diff dump. Match `assigned_rows[*].touches` paths against the file list, and match row IDs / contract numbers against commit subjects.\n\n```\n#{truncate(diff, 200_000)}\n```",
+      "## Branch state vs base\n\nThis is a structured summary (file list + commit subjects + diff stats), NOT a full diff dump. `assigned_rows[*].touches` are Planner GUESSES — treat them as hints only. Grade each row on its description against the actual files and content plus the commit subjects; if a row's `touches` paths don't appear (e.g. the plan used a different namespace), match on intent + commits rather than marking it missing.\n\n```\n#{truncate(diff, 200_000)}\n```",
       pr_body_section(pr_body),
       "## Test output\n\n```\n#{truncate(test_output, 20_000)}\n```",
       if(notes != "", do: "## Additional context\n\n#{notes}", else: nil)

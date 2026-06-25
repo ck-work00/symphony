@@ -171,17 +171,25 @@ Post test results — including screenshots — to the Linear issue:
    git rebase origin/main
    ```
    If there are conflicts, resolve them before continuing.
-3. Push the branch and create a PR:
+3. Push the branch and open a **draft** PR (only if one doesn't already exist):
    ```bash
    git push -u origin {{ issue.branch_name }}
-   gh pr create --title "{{ issue.identifier }}: <title>" --body "<description>\n\nLinear: {{ issue.identifier }}"
+   gh pr view --json number >/dev/null 2>&1 || \
+     gh pr create --draft --title "{{ issue.identifier }}: <title>" --body "<description>\n\nLinear: {{ issue.identifier }}"
    ```
+   ALWAYS open it as a draft. Symphony iterates across multiple dispatches, so a
+   ready (non-draft) PR trips the "PR opened -> In Review" automation and pulls
+   CodeRabbit in to review half-finished work. The PR stays a draft until the work
+   is complete and verified.
 4. Post the PR link as a comment on the Linear issue.
 
 ### Phase 7: Done
 
 After shipping the PR, stop. Do not continue working. Do not look for more work.
-Issue status transitions happen automatically via PR merge and deploy automations. Never move an issue's status yourself.
+Leave the PR as a **draft** -- do NOT run `gh pr ready` and do NOT move the issue's
+status yourself. The PR stays a draft (and the issue stays In Progress) until a human
+reviews the evidence on Linear and promotes it to ready-for-review; that ready
+transition is what moves the issue to In Review and invites CodeRabbit.
 
 ## Environment Notes
 
@@ -203,7 +211,9 @@ If a PR already exists for this issue, run this checklist:
 2. **CI failures**: Check with `gh pr checks <number>`. If any fail, fix the code and push.
 3. **Code review comments**: Check with `gh pr view <number> --comments` and `gh api repos/{owner}/{repo}/pulls/{number}/reviews`. Triage and address actionable feedback, then push.
 4. **Incomplete testing**: If issue comments indicate testing gaps, go back to Phase 4 (Test).
-5. **All clear**: If CI is green, no conflicts, reviews are addressed, and testing is confirmed — you are done.
+5. **All clear**: If CI is green, no conflicts, and reviews are addressed, push and stop.
+   Do NOT decide the issue is "done" or run `gh pr ready` — the grader decides completion
+   and a human promotes the draft.
 
 After fixing any issues, re-run Phase 4 (Test) to verify nothing broke, then push.
 

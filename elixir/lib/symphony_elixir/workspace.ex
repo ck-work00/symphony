@@ -281,7 +281,14 @@ defmodule SymphonyElixir.Workspace do
   # human session's lease (any other owner) is off limits — the per-poll
   # `git reset --hard` in release_registry_lease/1 would otherwise wipe a
   # teammate's uncommitted work on a shared machine.
-  defp symphony_owned?(lease), do: lease["owner"] == "symphony"
+  # A lease is Symphony's if it carries the upstream owner marker ("symphony") OR
+  # the orchestrator's conversation_id stamp. The local-dev slot-claim variant sets
+  # owner to the tmux session (e.g. "cc-symphony") for liveness and stamps
+  # conversation_id="symphony-orchestrator"; without the second clause the reaper
+  # never recognises those leases and they leak (the issue completes but the slot
+  # stays held).
+  defp symphony_owned?(lease),
+    do: lease["owner"] == "symphony" or lease["conversation_id"] == "symphony-orchestrator"
 
   # When the Symphony-eligible slot set is configured (SYMPHONY_PLATFORM_SLOTS /
   # SYMPHONY_PROCUREMENT_SLOTS — space-separated slot numbers, the same
@@ -408,6 +415,32 @@ defmodule SymphonyElixir.Workspace do
       end
     end)
   end
+
+  @doc """
+  `{slot_working_copy_dir, branch}` for the slot currently leased to `identifier`,
+  or nil. Read straight from the registry lease — reliable even when the scratch
+  workspace's `.symphony_slot` is gone between dispatches, or the slot tree is
+  parked on `main`. Used to act on the issue's PR from a real repo checkout.
+  """
+  @spec slot_lease_for_issue(String.t() | nil) :: {Path.t(), String.t()} | nil
+  def slot_lease_for_issue(identifier) when is_binary(identifier) do
+    ld = local_dev_dir()
+
+    Enum.find_value(registry_leases(), fn {slot_name, lease} ->
+      if is_binary(ld) and to_string(lease["linear_issue"]) == identifier do
+        {Path.join(ld, slot_name), to_string(lease["branch"])}
+      end
+    end)
+  end
+
+  def slot_lease_for_issue(_), do: nil
+
+  @doc "Scratch workspace path for an issue identifier (resolve the slot via `.symphony_slot`)."
+  @spec scratch_path(String.t() | nil) :: Path.t() | nil
+  def scratch_path(identifier) when is_binary(identifier),
+    do: workspace_path_for_issue(safe_identifier(identifier))
+
+  def scratch_path(_), do: nil
 
   defp workspace_path_for_issue(safe_id) when is_binary(safe_id) do
     Path.join(Config.workspace_root(), safe_id)

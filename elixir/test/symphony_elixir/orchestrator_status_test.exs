@@ -21,6 +21,43 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(pid, :stop)
   end
 
+  test "snapshot serves the last-known payload tagged stale when the server times out" do
+    # Reads survive a blocked poll cycle: a cached snapshot is returned (with
+    # :stale_age_ms) instead of :timeout, so the dashboard shows stale data.
+    table = :symphony_orchestrator_snapshot
+
+    if :ets.whereis(table) == :undefined do
+      :ets.new(table, [:named_table, :public, :set, read_concurrency: true])
+    end
+
+    on_exit(fn -> :ets.whereis(table) != :undefined && :ets.delete(table) end)
+
+    payload = %{running: [], retrying: [], completed_history: [], codex_totals: nil, rate_limits: nil}
+    :ets.insert(table, {:last, payload, System.monotonic_time(:millisecond)})
+
+    server_name = Module.concat(__MODULE__, :BlockedSnapshotServer)
+    parent = self()
+
+    pid =
+      spawn(fn ->
+        Process.register(self(), server_name)
+        send(parent, :snapshot_server_ready)
+
+        receive do
+          :stop -> :ok
+        end
+      end)
+
+    assert_receive :snapshot_server_ready, 1_000
+
+    result = Orchestrator.snapshot(server_name, 10)
+    assert is_map(result)
+    assert result.running == []
+    assert is_integer(result.stale_age_ms)
+
+    send(pid, :stop)
+  end
+
   test "orchestrator snapshot reflects last codex update and session id" do
     issue_id = "issue-snapshot"
 

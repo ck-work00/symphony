@@ -43,6 +43,15 @@ defmodule SymphonyElixir.Orchestrator do
     ]
   end
 
+  # Last successfully-built :snapshot payload, cached in ETS so reads survive a
+  # blocked poll cycle. The orchestrator runs LLM grade/plan + Linear HTTP inside
+  # handle_info(:run_poll_cycle); while that blocks, a `:snapshot` GenServer.call
+  # would time out. Serving the last-known payload (tagged stale) keeps the
+  # dashboard showing data instead of "Snapshot unavailable".
+  # ponytail: read-cache, not a full poll-cycle-into-Tasks refactor — add that if
+  # control calls (stop_issue/retry) also need to stay responsive under load.
+  @snapshot_cache :symphony_orchestrator_snapshot
+
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     name = Keyword.get(opts, :name, __MODULE__)
@@ -52,6 +61,7 @@ defmodule SymphonyElixir.Orchestrator do
   @impl true
   def init(_opts) do
     now_ms = System.monotonic_time(:millisecond)
+    ensure_snapshot_cache()
 
     state = %State{
       poll_interval_ms: Config.poll_interval_ms(),
@@ -838,15 +848,44 @@ defmodule SymphonyElixir.Orchestrator do
     # the issue, or block it for a human.
     case plan_action(issue, metadata) do
       {:dispatch, metadata} ->
+        # Work remains: keep the PR a draft (undo a worker that promoted it early).
+        enforce_pr_draft(issue, true)
         spawn_worker(state, issue, attempt, metadata)
 
       :done ->
         Logger.info("Plan complete and tester-approved for #{issue_context(issue)}; completing issue")
+        # Plan graded complete: now promote the draft to ready-for-review.
+        enforce_pr_draft(issue, false)
         complete_issue(state, issue.id)
 
       {:blocked, reason} ->
         block_issue_for_plan_failure(state, issue, reason)
     end
+  end
+
+  # Keep a worker's PR draft until the plan grades complete, then promote it.
+  # Best-effort + off the orchestrator loop: never let a gh hiccup stall dispatch.
+  defp enforce_pr_draft(issue, want_draft?) do
+    identifier = Map.get(issue, :identifier)
+
+    if is_binary(identifier) do
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        try do
+          case Workspace.slot_lease_for_issue(identifier) do
+            {slot_dir, branch} when is_binary(branch) and branch != "" ->
+              Evaluator.set_pr_draft(slot_dir, branch, want_draft?)
+
+            _ ->
+              :ok
+          end
+        rescue
+          error ->
+            Logger.warning("enforce_pr_draft failed for #{identifier}: #{Exception.message(error)}")
+        end
+      end)
+    end
+
+    :ok
   end
 
   defp spawn_worker(%State{} = state, issue, attempt, metadata) do
@@ -1800,11 +1839,37 @@ defmodule SymphonyElixir.Orchestrator do
       try do
         GenServer.call(server, :snapshot, timeout)
       catch
-        :exit, {:timeout, _} -> :timeout
-        :exit, _ -> :unavailable
+        :exit, {:timeout, _} -> cached_snapshot() || :timeout
+        :exit, _ -> cached_snapshot() || :unavailable
       end
     else
       :unavailable
+    end
+  end
+
+  defp ensure_snapshot_cache do
+    :ets.whereis(@snapshot_cache) != :undefined or
+      :ets.new(@snapshot_cache, [:named_table, :public, :set, read_concurrency: true])
+
+    :ok
+  end
+
+  defp cache_snapshot(payload) do
+    if :ets.whereis(@snapshot_cache) != :undefined do
+      :ets.insert(@snapshot_cache, {:last, payload, System.monotonic_time(:millisecond)})
+    end
+
+    payload
+  end
+
+  # Last-known snapshot, tagged with how stale it is, or nil if none cached yet.
+  defp cached_snapshot do
+    case :ets.whereis(@snapshot_cache) != :undefined && :ets.lookup(@snapshot_cache, :last) do
+      [{:last, payload, cached_ms}] ->
+        Map.put(payload, :stale_age_ms, System.monotonic_time(:millisecond) - cached_ms)
+
+      _ ->
+        nil
     end
   end
 
@@ -1856,19 +1921,20 @@ defmodule SymphonyElixir.Orchestrator do
         }
       end)
 
-    {:reply,
-     %{
-       running: running,
-       retrying: retrying,
-       completed_history: state.completed_history,
-       codex_totals: state.codex_totals,
-       rate_limits: Map.get(state, :codex_rate_limits),
-       polling: %{
-         checking?: state.poll_check_in_progress == true,
-         next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
-         poll_interval_ms: state.poll_interval_ms
-       }
-     }, state}
+    payload = %{
+      running: running,
+      retrying: retrying,
+      completed_history: state.completed_history,
+      codex_totals: state.codex_totals,
+      rate_limits: Map.get(state, :codex_rate_limits),
+      polling: %{
+        checking?: state.poll_check_in_progress == true,
+        next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
+        poll_interval_ms: state.poll_interval_ms
+      }
+    }
+
+    {:reply, cache_snapshot(payload), state}
   end
 
   def handle_call(:request_refresh, _from, state) do

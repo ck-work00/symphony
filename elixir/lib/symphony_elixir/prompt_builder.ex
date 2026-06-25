@@ -144,12 +144,18 @@ defmodule SymphonyElixir.PromptBuilder do
       gh pr list --head "$(git branch --show-current)" --json number,url,state --jq '.[0]'
 
     If a PR exists:
-    1. Check CI status: `gh pr checks <number>`
-    2. If CI is green and no unaddressed review comments — you are done.
-    3. If CI failed, fix the issue and push.
-    4. If there are review comments, address them and push.
+    1. If CI failed (`gh pr checks <number>`), fix it and push.
+    2. If there are review comments, address them and push.
+    3. Otherwise keep closing your assigned plan rows. You were dispatched again
+       because the grader found open rows, so green CI does NOT mean "done" — the
+       grader decides completion, not you.
 
-    If no PR exists, continue working toward shipping one.
+    If no PR exists, continue working toward shipping one (it will be opened as a draft).
+
+    Never change the PR's draft state: do NOT run `gh pr ready` (with or without
+    `--undo`). The PR stays a draft until the grader marks the plan complete and a
+    human promotes it; leaving it a draft is what keeps the issue from flipping to
+    In Review and pulling reviewers onto unfinished work.
 
     Do NOT re-run tests or post additional test reports if the PR is already open and CI is passing.
     Do NOT look for more work. Do NOT expand scope.

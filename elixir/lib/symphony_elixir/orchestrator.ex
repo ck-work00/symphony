@@ -1342,15 +1342,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp request_changes?(_), do: false
 
   # Strict approve: `Recommendation: APPROVE` followed by end-of-line or
-  # whitespace, with no qualifier like `APPROVE-AFTER-PUSH`. Optionally
-  # bolded (`**Recommendation:** APPROVE`).
+  # whitespace, with no qualifier like `APPROVE-AFTER-PUSH`. Tolerates markdown
+  # bolding anywhere around the label, colon, or value — testers write any of
+  # `Recommendation: APPROVE`, `**Recommendation:** APPROVE`,
+  # `**Recommendation**: APPROVE`, `Recommendation: **APPROVE**`. (Matching only
+  # the unbolded `Recommendation:` made every bolded-label approve read as
+  # request-changes, looping Test forever.)
   defp strict_tester_approve?(body) when is_binary(body) do
     Regex.match?(
-      ~r/Recommendation:\s*(?:\*\*\s*)?APPROVE(?:\s*\*\*)?(?=\s|$|\.)/m,
+      ~r/\*{0,2}Recommendation\*{0,2}:\*{0,2}\s*\*{0,2}APPROVE(?=\s|\*|$|\.)/m,
       body
     ) and
       not Regex.match?(
-        ~r/Recommendation:[^\n]*APPROVE[-\s]+(?:AFTER|WITH|PENDING|SUBJECT|ONCE|IF|MODULO)/i,
+        ~r/\*{0,2}Recommendation\*{0,2}:[^\n]*APPROVE[-\s]+(?:AFTER|WITH|PENDING|SUBJECT|ONCE|IF|MODULO)/i,
         body
       )
   end

@@ -30,6 +30,7 @@ defmodule SymphonyElixirWeb.Presenter do
           stale_age_ms: stale_age_ms,
           counts: %{
             running: length(snapshot.running),
+            max_concurrent: Config.max_concurrent_agents(),
             retrying: length(snapshot.retrying)
           },
           running: Enum.map(snapshot.running, &running_entry_payload(&1, pr_by_issue)),

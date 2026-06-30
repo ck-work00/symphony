@@ -554,6 +554,25 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @doc """
+  True when `path` is inside a local-dev pool slot (`$GEARFLOW_WORKSPACE/local-dev/…`).
+
+  On local-dev machines the agent runs inside a claimed pool slot under
+  `$GEARFLOW_WORKSPACE/local-dev/`, not the standard `~/Documents/Gearflow`
+  pool root — so the cwd guardrails must accept it too. Returns false when
+  `GEARFLOW_WORKSPACE` is unset (standard deployments are unaffected).
+  """
+  @spec local_dev_slot?(String.t()) :: boolean()
+  def local_dev_slot?(path) when is_binary(path) do
+    case System.get_env("GEARFLOW_WORKSPACE") do
+      ws when is_binary(ws) and ws != "" ->
+        String.starts_with?(Path.expand(path), Path.expand(Path.join(ws, "local-dev")) <> "/")
+
+      _ ->
+        false
+    end
+  end
+
   defp validate_workspace_path(workspace) when is_binary(workspace) do
     expanded_workspace = Path.expand(workspace)
     root = Path.expand(Config.workspace_root())

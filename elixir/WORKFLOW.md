@@ -33,7 +33,7 @@ hooks:
 
 agent:
   backend: claude
-  max_concurrent_agents: 3
+  max_concurrent_agents: 5
   max_turns: 20
 
 claude:
@@ -42,9 +42,12 @@ claude:
   max_turns: 0
   stall_timeout_ms: 600000
   turn_timeout_ms: 3600000
-  # Per-stage model overrides (fall back to `model` when unset).
-  # Test (tester sub-agent) runs on Sonnet; Grade left on the default for now.
+  # Per-stage model overrides (fall back to `model` when unset). The
+  # context-constrained verification/fix stages run on Sonnet; Implement and
+  # the planner stay on the default (top) model.
   test_model: claude-sonnet-4-6
+  grade_model: claude-sonnet-4-6
+  fix_ci_model: claude-sonnet-4-6
 
 server:
   port: 4040

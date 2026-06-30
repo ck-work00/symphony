@@ -253,6 +253,10 @@ defmodule SymphonyElixir.Claude.CLI do
         # Allow pool slot directories used by symphony-slot-claim
         :ok
 
+      SymphonyElixir.Workspace.local_dev_slot?(expanded) ->
+        # Allow local-dev pool slots under $GEARFLOW_WORKSPACE/local-dev
+        :ok
+
       true ->
         {:error, {:invalid_workspace_cwd, :outside_root}}
     end

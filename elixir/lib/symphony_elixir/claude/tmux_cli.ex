@@ -596,7 +596,7 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
   end
 
   # Same workspace guardrails as SymphonyElixir.Claude.CLI: only run inside the
-  # configured workspace root or the pool-slot root.
+  # configured workspace root, the pool-slot root, or a local-dev pool slot.
   defp validate_workspace(workspace) do
     expanded = Path.expand(workspace)
     root = Path.expand(Config.workspace_root())
@@ -606,6 +606,7 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
       !File.dir?(expanded) -> {:error, {:invalid_workspace_cwd, :not_a_directory}}
       String.starts_with?(expanded, root) -> :ok
       String.starts_with?(expanded, pool_root) -> :ok
+      SymphonyElixir.Workspace.local_dev_slot?(expanded) -> :ok
       true -> {:error, {:invalid_workspace_cwd, :outside_root}}
     end
   end

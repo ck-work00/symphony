@@ -19,18 +19,9 @@ Do not proceed with simplification until CI is green.
 
 ### Address PR review feedback
 
-Check for review comments on the PR:
-
-```bash
-gh pr view $PR_NUM --json reviews,comments --jq '.reviews[] | "\(.author.login): \(.state) - \(.body)"'
-gh pr view $PR_NUM --json comments --jq '.comments[] | "\(.author.login): \(.body)"'
-```
-
-If there are actionable review comments (from CodeRabbit or human reviewers):
-1. Read each comment carefully
-2. Make the requested changes
-3. Write tests for any changes you make
-4. Push the fixes
+Resolving CodeRabbit / human review threads is handled by the dedicated **Resolve
+Review** phase (the orchestrator dispatches it when a review requests changes).
+Do not duplicate that work here — focus this phase on simplification.
 
 ### Check test coverage
 

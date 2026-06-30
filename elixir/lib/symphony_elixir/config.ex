@@ -192,6 +192,7 @@ defmodule SymphonyElixir.Config do
                                  # Per-stage model overrides; fall back to `model` when nil.
                                  test_model: [type: {:or, [:string, nil]}, default: nil],
                                  grade_model: [type: {:or, [:string, nil]}, default: nil],
+                                 fix_ci_model: [type: {:or, [:string, nil]}, default: nil],
                                  turn_timeout_ms: [
                                    type: :integer,
                                    default: @default_claude_turn_timeout_ms
@@ -528,6 +529,12 @@ defmodule SymphonyElixir.Config do
   @spec claude_grade_model() :: String.t() | nil
   def claude_grade_model do
     get_in(validated_workflow_options(), [:claude, :grade_model]) || claude_model()
+  end
+
+  @doc "Model for the Fix CI stage; falls back to `claude_model`."
+  @spec claude_fix_ci_model() :: String.t() | nil
+  def claude_fix_ci_model do
+    get_in(validated_workflow_options(), [:claude, :fix_ci_model]) || claude_model()
   end
 
   @spec claude_turn_timeout_ms() :: pos_integer()
@@ -898,6 +905,7 @@ defmodule SymphonyElixir.Config do
     # string is truthy, so `get_in(...) || claude_model()` would not.
     |> put_if_present(:test_model, command_value(Map.get(section, "test_model")))
     |> put_if_present(:grade_model, command_value(Map.get(section, "grade_model")))
+    |> put_if_present(:fix_ci_model, command_value(Map.get(section, "fix_ci_model")))
     |> put_if_present(:turn_timeout_ms, integer_value(Map.get(section, "turn_timeout_ms")))
     |> put_if_present(:stall_timeout_ms, integer_value(Map.get(section, "stall_timeout_ms")))
     |> put_if_present(:output_format, scalar_string_value(Map.get(section, "output_format")))

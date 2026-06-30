@@ -27,6 +27,7 @@ defmodule SymphonyElixir.Planning.Grader do
   require Logger
 
   alias SymphonyElixir.Claude.OneShot
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Planning
   alias SymphonyElixir.Planning.Dispatch
 
@@ -139,8 +140,9 @@ defmodule SymphonyElixir.Planning.Grader do
     plan = Keyword.fetch!(evidence, :plan)
 
     user_prompt = build_user_prompt(dispatch, plan, evidence)
+    opts = Keyword.put(evidence, :model, Config.claude_grade_model())
 
-    with {:ok, grade_json} <- OneShot.request_json(@grade_system_prompt, user_prompt, evidence),
+    with {:ok, grade_json} <- OneShot.request_json(@grade_system_prompt, user_prompt, opts),
          :ok <- validate_shape(grade_json, dispatch),
          {:ok, updated} <- Planning.record_grade(dispatch, grade_json) do
       {:ok, updated}

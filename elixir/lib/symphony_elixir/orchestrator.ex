@@ -1055,8 +1055,12 @@ defmodule SymphonyElixir.Orchestrator do
                 reopen_and_dispatch(issue, metadata, plan, reason, "Fix CI")
 
               {:request_changes, reason} ->
-                Logger.info("Tester approved #{issue.identifier} but ship gate blocks: #{reason}")
-                reopen_and_dispatch(issue, metadata, plan, reason)
+                # A reviewer (CodeRabbit or human) requested changes. Dispatch the
+                # dedicated Resolve Review phase — its prompt enumerates every
+                # review thread and fixes-or-replies each, instead of a generic
+                # Implement row-closer that only sees the reason string.
+                Logger.info("Tester approved #{issue.identifier} but review requested changes: #{reason}")
+                reopen_and_dispatch(issue, metadata, plan, reason, "Resolve Review")
             end
 
           :needs_test ->
@@ -1111,6 +1115,12 @@ defmodule SymphonyElixir.Orchestrator do
     body |> String.trim() |> String.replace(~r/\s+/, " ") |> String.slice(0, 600)
   end
 
+  # Per-phase model: context-constrained phases run on the cheaper model; the
+  # core Implement row-closer and anything unlisted stay on the default model.
+  # (Test sets its own model at its dispatch site; Grade via the Grader.)
+  defp model_for_phase("Fix CI"), do: Config.claude_fix_ci_model()
+  defp model_for_phase(_phase), do: Config.claude_model()
+
   # Record a Dispatch and build the metadata for an Implement row-closer dispatch.
   defp dispatch_implement(issue, metadata, plan, rows, why, phase \\ "Implement") do
     case SymphonyElixir.Planning.Workflow.start_implement_dispatch(plan, rows) do
@@ -1123,6 +1133,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> Map.put(:assigned_rows, rows)
           |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
           |> Map.put(:plan_dispatch_id, dispatch.id)
+          |> Map.put(:model, model_for_phase(phase))
 
         {:dispatch, metadata}
 
@@ -1212,11 +1223,24 @@ defmodule SymphonyElixir.Orchestrator do
   defp review_gate(pr_url) do
     case pr_ref(pr_url) do
       {repo, number} ->
-        case gh_cmd(["pr", "view", number, "--repo", repo, "--json", "reviewDecision"]) do
+        case gh_cmd(["pr", "view", number, "--repo", repo, "--json", "reviewDecision,latestReviews"]) do
           {output, 0} ->
             case Jason.decode(output) do
               {:ok, %{"reviewDecision" => "CHANGES_REQUESTED"}} ->
                 {:request_changes, "PR review requested changes"}
+
+              # CodeRabbit runs in request-changes mode and is a hard merge gate,
+              # but it is not always a "required" reviewer, so reviewDecision can
+              # be nil while CodeRabbit's own review still sits at CHANGES_REQUESTED.
+              # Block on its review directly; the worker clears it by resolving the
+              # comments and posting `@coderabbitai resolve` (auto-approves on green CI).
+              {:ok, decoded} ->
+                if coderabbit_requested_changes?(decoded) do
+                  {:request_changes,
+                   "CodeRabbit requested changes — resolve its comments and post `@coderabbitai resolve`"}
+                else
+                  :ok
+                end
 
               _ ->
                 :ok
@@ -1232,6 +1256,16 @@ defmodule SymphonyElixir.Orchestrator do
   rescue
     _ -> :ok
   end
+
+  defp coderabbit_requested_changes?(%{"latestReviews" => reviews}) when is_list(reviews) do
+    Enum.any?(reviews, fn review ->
+      login = get_in(review, ["author", "login"])
+      is_binary(login) and String.starts_with?(login, "coderabbit") and
+        Map.get(review, "state") == "CHANGES_REQUESTED"
+    end)
+  end
+
+  defp coderabbit_requested_changes?(_), do: false
 
   defp pr_ref(pr_url) when is_binary(pr_url) do
     case Regex.run(~r{github\.com/([^/]+/[^/]+)/pull/(\d+)}, pr_url) do

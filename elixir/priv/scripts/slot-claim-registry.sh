@@ -171,7 +171,9 @@ if [ -z "$CLAIMED_SLOT" ]; then
       echo "  ${REPO_PREFIX}-slot${S}: LEASED (owner=$(json_field "$LF" owner) issue=$(json_field "$LF" linear_issue) branch=$(json_field "$LF" branch))"
     fi
   done
-  exit 1
+  # 75 = EX_TEMPFAIL: no free slot right now (pool is shared with interactive
+  # sessions). The orchestrator treats this as "back off and retry", not a crash.
+  exit 75
 fi
 
 SLOT_NUM="$CLAIMED_SLOT"

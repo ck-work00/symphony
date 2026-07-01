@@ -12,6 +12,8 @@ defmodule SymphonyElixir.Orchestrator do
   alias SymphonyElixir.Linear.Issue
 
   @continuation_retry_delay_ms 30_000
+  # Fixed poll interval while waiting for a shared pool slot to free.
+  @no_capacity_retry_delay_ms 45_000
   @max_continuations 5
   @failure_retry_base_ms 10_000
   # Slightly above the dashboard render interval so "checking now…" can render.
@@ -133,6 +135,32 @@ defmodule SymphonyElixir.Orchestrator do
 
     notify_dashboard()
     {:noreply, state}
+  end
+
+  # No free pool slot — the worker exited cleanly before doing anything (the
+  # pool is shared with interactive sessions). Not a crash: skip grading/history/
+  # slot-release and requeue quietly with a fixed backoff until a slot frees.
+  def handle_info({:DOWN, ref, :process, _pid, {:shutdown, :no_capacity}}, %{running: running} = state) do
+    case find_issue_id_for_ref(running, ref) do
+      nil ->
+        {:noreply, state}
+
+      issue_id ->
+        {running_entry, state} = pop_running_entry(state, issue_id)
+
+        Logger.info(
+          "No pool slot for issue_id=#{issue_id} identifier=#{running_entry[:identifier]}; backing off"
+        )
+
+        state =
+          schedule_issue_retry(state, issue_id, 1, %{
+            identifier: running_entry[:identifier],
+            delay_type: :no_capacity
+          })
+
+        notify_dashboard()
+        {:noreply, state}
+    end
   end
 
   def handle_info(
@@ -1790,11 +1818,17 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation do
-      # Exponential backoff: 30s, 60s, 120s, 240s, ...
-      min(@continuation_retry_delay_ms * (1 <<< (attempt - 1)), Config.max_retry_backoff_ms())
-    else
-      failure_retry_delay(attempt)
+    case metadata[:delay_type] do
+      :no_capacity ->
+        # Waiting for a pool slot to free — a steady gentle poll, not a failure.
+        @no_capacity_retry_delay_ms
+
+      :continuation ->
+        # Exponential backoff: 30s, 60s, 120s, 240s, ...
+        min(@continuation_retry_delay_ms * (1 <<< (attempt - 1)), Config.max_retry_backoff_ms())
+
+      _ ->
+        failure_retry_delay(attempt)
     end
   end
 

@@ -45,9 +45,9 @@ claude:
   # Per-stage model overrides (fall back to `model` when unset). The
   # context-constrained verification/fix stages run on Sonnet; Implement and
   # the planner stay on the default (top) model.
-  test_model: claude-sonnet-4-6
-  grade_model: claude-sonnet-4-6
-  fix_ci_model: claude-sonnet-4-6
+  test_model: sonnet
+  grade_model: sonnet
+  fix_ci_model: sonnet
 
 server:
   port: 4040

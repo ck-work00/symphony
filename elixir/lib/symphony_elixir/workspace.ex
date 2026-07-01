@@ -531,6 +531,18 @@ defmodule SymphonyElixir.Workspace do
     :ok
   end
 
+  # Exit 75 (EX_TEMPFAIL): the hook can't proceed right now — e.g. no free pool
+  # slot (the pool is shared with interactive sessions). Not a failure: signal
+  # the caller to back off and retry quietly instead of crashing the run.
+  defp handle_hook_command_result({output, 75}, _workspace, issue_context, hook_name) do
+    Logger.info(
+      "Workspace hook signalled no capacity hook=#{hook_name} #{issue_log_context(issue_context)}: " <>
+        String.trim(sanitize_hook_output_for_log(output))
+    )
+
+    {:error, :hook_no_capacity}
+  end
+
   defp handle_hook_command_result({output, status}, workspace, issue_context, hook_name) do
     sanitized_output = sanitize_hook_output_for_log(output)
 

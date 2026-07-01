@@ -18,6 +18,12 @@ defmodule SymphonyElixir.AgentRunner do
                :ok <- run_codex_turns(workspace, issue, codex_update_recipient, opts) do
             :ok
           else
+            {:error, :hook_no_capacity} ->
+              # No free pool slot right now — exit cleanly so the orchestrator
+              # backs off and retries, instead of raising (which records a crash).
+              Logger.info("No pool slot available for #{issue_context(issue)}; backing off")
+              exit({:shutdown, :no_capacity})
+
             {:error, reason} ->
               Logger.error("Agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
               raise RuntimeError, "Agent run failed for #{issue_context(issue)}: #{inspect(reason)}"

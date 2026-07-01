@@ -40,18 +40,53 @@ gh api repos/{owner}/{repo}/pulls/$PR_NUM/reviews \
   --jq '[.[] | select(.user.login | startswith("coderabbit"))] | last | {state, commit_id}'
 ```
 
-### Step 3: For EVERY thread, fix it or reply to it — no silent ignores
+### Step 3: EVERY comment gets a reply — no exceptions
 
-- **Valid finding** → make the change (with a test if code changed), commit, push.
-- **Not applicable / out of scope / wrong** → reply on the thread explaining why.
+**The rule: every CodeRabbit comment must be answered with a reply — the ones you
+fix AND the ones you won't.** A comment you silently ignore, or bulk-resolve
+without a reply, is not addressed. `@coderabbitai resolve` is NOT a substitute
+for replying: it closes threads but leaves the reviewer no record of your
+decision. Reply first, resolve last.
 
-Every thread must end with either a pushed fix or a reply. Don't leave any
-untouched. Run `direnv exec . mix check` and `direnv exec . mix test` after code
-changes.
+List every unresolved CodeRabbit thread's root comment id (reply targets):
 
-### Step 4: Resolve and exit the gate
+```bash
+gh api repos/{owner}/{repo}/pulls/$PR_NUM/comments --paginate \
+  --jq '.[] | select(.in_reply_to_id==null and (.user.login|startswith("coderabbit"))) | {id, path, line, body}'
+```
 
-Once every thread is fixed-or-replied and CI is green, post:
+For **each** one, post a reply to that specific thread — pick exactly one:
+
+- **Fixing it** → make the change (with a test if code changed) and commit, then:
+  ```bash
+  gh api repos/{owner}/{repo}/pulls/$PR_NUM/comments/<comment_id>/replies \
+    -f body="Fixed in <sha>: <one line on what changed>."
+  ```
+- **Not fixing it** (out of scope / already correct / wrong / a deliberate
+  trade-off) → reply with a specific, honest reason — this is REQUIRED, not
+  optional:
+  ```bash
+  gh api repos/{owner}/{repo}/pulls/$PR_NUM/comments/<comment_id>/replies \
+    -f body="Won't change: <concrete reason>."
+  ```
+
+Run `direnv exec . mix check` and `direnv exec . mix test` after code changes,
+then push.
+
+### Step 4: Verify no comment is unanswered, then resolve
+
+Before resolving, prove every CodeRabbit thread now has a reply authored by you —
+if any root comment has zero replies, go back to Step 3:
+
+```bash
+gh api repos/{owner}/{repo}/pulls/$PR_NUM/comments --paginate \
+  --jq 'group_by(.in_reply_to_id // .id)
+        | map({thread: .[0], replies: (length-1)})
+        | .[] | select(.thread.user.login|startswith("coderabbit")) | select(.replies==0)
+        | "UNANSWERED: \(.thread.path):\(.thread.line) id=\(.thread.id)"'
+```
+
+Empty output = every comment answered. Only then, with CI green, post:
 
 ```bash
 gh pr comment $PR_NUM --body "@coderabbitai resolve"

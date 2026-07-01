@@ -31,6 +31,12 @@ defmodule SymphonyElixir.Claude.AgentRunner do
                :ok <- run_claude_turns(workspace, issue, claude_update_recipient, opts) do
             :ok
           else
+            {:error, :hook_no_capacity} ->
+              # No free pool slot right now — exit cleanly so the orchestrator
+              # backs off and retries, instead of raising (which records a crash).
+              Logger.info("No pool slot available for #{issue_context(issue)}; backing off")
+              exit({:shutdown, :no_capacity})
+
             {:error, reason} ->
               Logger.error("Claude agent run failed for #{issue_context(issue)}: #{inspect(reason)}")
               raise RuntimeError, "Claude agent run failed for #{issue_context(issue)}: #{inspect(reason)}"

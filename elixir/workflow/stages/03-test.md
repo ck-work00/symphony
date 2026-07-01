@@ -119,9 +119,24 @@ Drift here (wrong backdrop, wrong breakpoint, a missing entry point, the wrong d
 
 A flag is only flippable if turning it on doesn't break its neighbors. With every relevant `lv_*` flag ON, load the component's own route AND every sibling section route that shares its layout or data helpers. Assert each returns HTTP 200 with a clean console — no 500, `KeyError`, or `Ecto.Query.CastError`. This is cheap and catches the classic flip failures: a `/:section/inbox` path cast as a record id, or a shared helper that returns an incomplete struct once the flag enables a new template branch. Any crash is `❌` and forces `REQUEST_CHANGES` (or `BLOCKED` if the route won't load at all), regardless of how clean the content rows looked.
 
-### Step 5: Post the Tester Report
+### Step 5: Post the Tester Report — to Linear ONLY
 
-Post a `## Tester Report` comment on the Linear issue. Format:
+**The Tester Report goes to the Linear issue and NOWHERE else.** The orchestrator
+parses it from Linear comments — a report posted to the GitHub PR is invisible to
+it, so the issue loops forever. Post it with the Linear GraphQL `commentCreate`
+mutation against `{{ issue.id }}`:
+
+```bash
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY_AUTOMATION" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "mutation($id: String!, $body: String!) { commentCreate(input: { issueId: $id, body: $body }) { success } }", "variables": {"id": "{{ issue.id }}", "body": "YOUR_TESTER_REPORT"}}'
+```
+
+**NEVER** post the report to GitHub — no `gh pr comment`, no `gh pr review`, no
+`gh api .../issues/comments`. Nothing about the report touches the PR.
+
+Report format:
 
 ```
 ## Tester Report

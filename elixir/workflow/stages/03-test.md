@@ -183,8 +183,24 @@ parse that, reads it as REQUEST_CHANGES, and loops the issue forever. Choose:
 - **REQUEST_CHANGES** — at least one row is `⚠` or `❌`. The orchestrator re-dispatches Implement to address the gaps.
 - **BLOCKED** — the page can't be tested at all (preflight failed, page won't load, slot is broken). Include a description of the blocker.
 
-### Step 6: Stop
+### Step 6: Emit the machine verdict
 
-Do NOT modify code. Do NOT push. Do NOT open or close PRs. Your only output is the Tester Report comment.
+After the Linear report is posted, print the machine-readable verdict on its own
+line in your output (this is separate from the Linear comment — the orchestrator
+reads it from your output stream, and it is how your verdict actually reaches the
+machine; the Linear report is for humans):
 
-End your turn cleanly after posting. The orchestrator reads the report and decides whether to dispatch the next phase or re-dispatch Implement.
+```
+SYMPHONY_VERDICT: APPROVE <pr-head-sha>
+```
+
+Use `APPROVE`, `REQUEST_CHANGES`, or `BLOCKED` to match your `Recommendation:`
+line exactly, and append the PR head SHA you tested (`git rev-parse HEAD`). Emit
+this on **every** run, including re-tests.
+
+### Step 7: Stop
+
+Do NOT modify code. Do NOT push. Do NOT open or close PRs. Your outputs are the
+Linear Tester Report comment and the `SYMPHONY_VERDICT` line.
+
+End your turn cleanly after posting. The orchestrator reads the verdict and decides whether to dispatch the next phase or re-dispatch Implement.

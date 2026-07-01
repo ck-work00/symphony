@@ -5,7 +5,7 @@ defmodule SymphonyElixir.History do
 
   import Ecto.Query
   alias SymphonyElixir.Repo
-  alias SymphonyElixir.History.{Run, RunEvent}
+  alias SymphonyElixir.History.{Run, RunEvent, TesterVerdict}
 
   # ---------------------------------------------------------------------------
   # Write operations
@@ -16,6 +16,29 @@ defmodule SymphonyElixir.History do
     attrs
     |> Run.create_changeset()
     |> Repo.insert()
+  end
+
+  @doc """
+  Record a tester verdict (from the `SYMPHONY_VERDICT` marker). This is the
+  machine-readable source of truth the gate reads; the Linear report is for
+  humans. Best-effort: a bad verdict string is dropped rather than raising.
+  """
+  @spec record_tester_verdict(String.t(), String.t(), String.t() | nil) ::
+          {:ok, TesterVerdict.t()} | {:error, Ecto.Changeset.t()}
+  def record_tester_verdict(issue_identifier, verdict, commit_sha \\ nil) do
+    %{issue_identifier: issue_identifier, verdict: verdict, commit_sha: commit_sha}
+    |> TesterVerdict.create_changeset()
+    |> Repo.insert()
+  end
+
+  @doc "The most recent tester verdict for an issue, or nil."
+  @spec latest_tester_verdict(String.t()) :: TesterVerdict.t() | nil
+  def latest_tester_verdict(issue_identifier) when is_binary(issue_identifier) do
+    TesterVerdict
+    |> where([v], v.issue_identifier == ^issue_identifier)
+    |> order_by([v], desc: v.inserted_at)
+    |> limit(1)
+    |> Repo.one()
   end
 
   @spec record_completion(Run.t() | String.t(), map()) :: {:ok, Run.t()} | {:error, term()}

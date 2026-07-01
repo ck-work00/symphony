@@ -8,6 +8,10 @@ defmodule SymphonyElixir.Claude.StreamParser do
   # Match "SYMPHONY_NEEDS_HELP: description" markers
   @symphony_needs_help_regex ~r/SYMPHONY_NEEDS_HELP:\s*(.+)/
 
+  # Match "SYMPHONY_VERDICT: APPROVE|REQUEST_CHANGES|BLOCKED [<commit-sha>]" markers —
+  # the tester's machine-readable verdict, optionally tagged with the tested head.
+  @symphony_verdict_regex ~r/SYMPHONY_VERDICT:\s*(APPROVE|REQUEST_CHANGES|BLOCKED)(?:\s+([0-9a-fA-F]{7,40}))?/
+
   @doc """
   Parse a single JSON line from stdout. Returns {:ok, event_map} or {:error, reason}.
   """
@@ -135,6 +139,23 @@ defmodule SymphonyElixir.Claude.StreamParser do
   def extract_needs_help(_event), do: nil
 
   @doc """
+  Extract a `SYMPHONY_VERDICT` marker from an event.
+
+  Returns `{verdict, commit_sha | nil}` (verdict is "APPROVE" | "REQUEST_CHANGES"
+  | "BLOCKED") or nil when no marker is present.
+  """
+  @spec extract_verdict(map()) :: {String.t(), String.t() | nil} | nil
+  def extract_verdict(%{event_type: :assistant} = event) do
+    event |> extract_text_content() |> detect_verdict()
+  end
+
+  def extract_verdict(%{event_type: :tool_result} = event) do
+    event |> extract_tool_result_text() |> detect_verdict()
+  end
+
+  def extract_verdict(_event), do: nil
+
+  @doc """
   Concatenate the text blocks of an assistant event's message content.
 
   Returns the joined text (tool-use and other non-text blocks dropped), or an
@@ -150,6 +171,17 @@ defmodule SymphonyElixir.Claude.StreamParser do
   defp detect_needs_help(text) do
     case Regex.run(@symphony_needs_help_regex, text) do
       [_, message] -> message |> String.trim() |> String.slice(0, 500)
+      nil -> nil
+    end
+  end
+
+  defp detect_verdict(text) when not is_binary(text) or text == "", do: nil
+
+  defp detect_verdict(text) do
+    case Regex.run(@symphony_verdict_regex, text) do
+      [_, verdict] -> {verdict, nil}
+      [_, verdict, ""] -> {verdict, nil}
+      [_, verdict, sha] -> {verdict, sha}
       nil -> nil
     end
   end

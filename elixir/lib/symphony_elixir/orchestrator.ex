@@ -260,6 +260,20 @@ defmodule SymphonyElixir.Orchestrator do
             updated_running_entry
           end
 
+        # Record the tester's machine verdict (SYMPHONY_VERDICT marker) to the DB.
+        # The gate reads this record — not the human-facing Linear report — so a
+        # verdict can't be lost to wording variance or a report posted to GitHub.
+        if raw_event do
+          case StreamParser.extract_verdict(raw_event) do
+            {verdict, sha} ->
+              if identifier = Map.get(running_entry, :identifier),
+                do: History.record_tester_verdict(identifier, verdict, sha)
+
+            _ ->
+              :ok
+          end
+        end
+
         updated_running_entry = maybe_persist_run_progress(updated_running_entry)
 
         state =
@@ -1334,11 +1348,42 @@ defmodule SymphonyElixir.Orchestrator do
   # On a Linear fetch failure we return :needs_test so the tester runs again
   # rather than declaring the issue done on missing evidence; the continuation
   # cap bounds any loop.
+  # The tester verdict lives in the DB (recorded from the tester's
+  # SYMPHONY_VERDICT marker) — the machine source of truth. A verdict older than
+  # the last Implement dispatch is stale (code changed since), so re-test. Fall
+  # back to parsing the Linear report only when there is no DB verdict yet
+  # (legacy / in-flight issues), so we don't force a needless re-test on rollout.
   defp tester_gate(issue, plan) do
+    last_implement = last_implement_dispatch_finish(plan)
+
+    case History.latest_tester_verdict(Map.get(issue, :identifier)) do
+      %SymphonyElixir.History.TesterVerdict{} = verdict ->
+        cond do
+          stale_verdict?(verdict, last_implement) ->
+            :needs_test
+
+          verdict.verdict == "APPROVE" ->
+            :approved
+
+          true ->
+            {:request_changes, "tester #{verdict.verdict} at #{DateTime.to_iso8601(verdict.inserted_at)}"}
+        end
+
+      nil ->
+        tester_gate_from_linear(issue, last_implement)
+    end
+  rescue
+    _ -> :needs_test
+  end
+
+  defp stale_verdict?(%{inserted_at: at}, last_implement) do
+    not is_nil(last_implement) and DateTime.compare(at, last_implement) != :gt
+  end
+
+  defp tester_gate_from_linear(issue, last_implement) do
     case SymphonyElixir.Linear.Client.fetch_all_issue_comments(Map.get(issue, :id)) do
       {:ok, comments} ->
         latest = latest_tester_report(comments)
-        last_implement = last_implement_dispatch_finish(plan)
 
         cond do
           is_nil(latest) ->
@@ -1357,8 +1402,6 @@ defmodule SymphonyElixir.Orchestrator do
       _ ->
         :needs_test
     end
-  rescue
-    _ -> :needs_test
   end
 
   # Plan generation/advancement failed and there is no phase-judge fallback.

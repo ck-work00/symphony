@@ -1084,11 +1084,13 @@ defmodule SymphonyElixir.Orchestrator do
 
               {:request_changes, reason} ->
                 # A reviewer (CodeRabbit or human) requested changes. Dispatch the
-                # dedicated Resolve Review phase — its prompt enumerates every
-                # review thread and fixes-or-replies each, instead of a generic
-                # Implement row-closer that only sees the reason string.
+                # dedicated Resolve Review phase WITHOUT reopening the plan's rows:
+                # the implementation is done and tester-approved — CR triage only
+                # addresses review threads and re-checks the review gate. Reopening
+                # rows here would send the issue back through Implement/Test and it
+                # would never finish the CR pass.
                 Logger.info("Tester approved #{issue.identifier} but review requested changes: #{reason}")
-                reopen_and_dispatch(issue, metadata, plan, reason, "Resolve Review")
+                dispatch_review(issue, metadata, plan, reason)
             end
 
           :needs_test ->
@@ -1148,6 +1150,26 @@ defmodule SymphonyElixir.Orchestrator do
   # (Test sets its own model at its dispatch site; Grade via the Grader.)
   defp model_for_phase("Fix CI"), do: Config.claude_fix_ci_model()
   defp model_for_phase(_phase), do: Config.claude_model()
+
+  # Dispatch the Resolve Review (CR triage) phase WITHOUT reopening the plan's
+  # rows. The implementation is done + tester-approved; this pass only addresses
+  # review threads and re-checks the review gate on the next completion. No
+  # Dispatch record is created, so the Grader does not run — nothing can flip the
+  # done rows back open and bounce the issue into Implement/Test. The review gate
+  # keeps re-dispatching this until the review approves.
+  defp dispatch_review(issue, metadata, plan, reason) do
+    Logger.info("Dispatching Resolve Review for #{issue.identifier} (#{reason}); rows left done")
+
+    metadata =
+      metadata
+      |> Map.put(:retask_phases, ["Resolve Review"])
+      |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
+      |> Map.put(:model, model_for_phase("Resolve Review"))
+      |> Map.delete(:plan_dispatch_id)
+      |> Map.delete(:assigned_rows)
+
+    {:dispatch, metadata}
+  end
 
   # Record a Dispatch and build the metadata for an Implement row-closer dispatch.
   defp dispatch_implement(issue, metadata, plan, rows, why, phase \\ "Implement") do

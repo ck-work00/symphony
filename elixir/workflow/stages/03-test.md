@@ -155,7 +155,14 @@ React-vs-LV for every state and dialog you walked. Never leave an empty `![]()`.
 **Recommendation: APPROVE** | **REQUEST_CHANGES** | **BLOCKED**
 ```
 
-The `Recommendation:` line is parsed by the orchestrator. Choose:
+The `Recommendation:` line is parsed by the orchestrator by exact match, so
+**every report MUST contain one literal `Recommendation: APPROVE`,
+`Recommendation: REQUEST_CHANGES`, or `Recommendation: BLOCKED` line.** This is
+true on a re-test too: if nothing changed and the work is still good, that is an
+`APPROVE` — say `Recommendation: APPROVE` again in full. Do NOT write shorthand
+like "no drift, standing recommendation holds" or "see prior report" and do NOT
+reference a previous verdict instead of stating one — the orchestrator can't
+parse that, reads it as REQUEST_CHANGES, and loops the issue forever. Choose:
 
 - **APPROVE** — every Contract row is `✅ verified`, console is clean, no drift, and (for an overlay/cross-cutting component) shell parity is verified and the flippability sweep is clean. The orchestrator marks Test done and dispatches Share Evidence.
 - **REQUEST_CHANGES** — at least one row is `⚠` or `❌`. The orchestrator re-dispatches Implement to address the gaps.

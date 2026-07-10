@@ -190,6 +190,7 @@ defmodule SymphonyElixir.Config do
                                  command: [type: :string, default: @default_claude_command],
                                  model: [type: {:or, [:string, nil]}, default: nil],
                                  # Per-stage model overrides; fall back to `model` when nil.
+                                 plan_model: [type: {:or, [:string, nil]}, default: nil],
                                  test_model: [type: {:or, [:string, nil]}, default: nil],
                                  grade_model: [type: {:or, [:string, nil]}, default: nil],
                                  fix_ci_model: [type: {:or, [:string, nil]}, default: nil],
@@ -517,6 +518,12 @@ defmodule SymphonyElixir.Config do
   @spec claude_model() :: String.t() | nil
   def claude_model do
     get_in(validated_workflow_options(), [:claude, :model])
+  end
+
+  @doc "Model for the Plan (Planner) stage; falls back to `claude_model`."
+  @spec claude_plan_model() :: String.t() | nil
+  def claude_plan_model do
+    get_in(validated_workflow_options(), [:claude, :plan_model]) || claude_model()
   end
 
   @doc "Model for the Test (tester sub-agent) stage; falls back to `claude_model`."
@@ -903,6 +910,7 @@ defmodule SymphonyElixir.Config do
     # command_value (not scalar_string_value) so a blank/whitespace-only value
     # becomes :omit and the getter falls back to claude_model/0 — an empty
     # string is truthy, so `get_in(...) || claude_model()` would not.
+    |> put_if_present(:plan_model, command_value(Map.get(section, "plan_model")))
     |> put_if_present(:test_model, command_value(Map.get(section, "test_model")))
     |> put_if_present(:grade_model, command_value(Map.get(section, "grade_model")))
     |> put_if_present(:fix_ci_model, command_value(Map.get(section, "fix_ci_model")))

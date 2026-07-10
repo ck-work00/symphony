@@ -18,6 +18,7 @@ defmodule SymphonyElixir.Planning.Planner do
   require Logger
 
   alias SymphonyElixir.Claude.OneShot
+  alias SymphonyElixir.Config
   alias SymphonyElixir.Planning
 
   @plan_system_prompt """
@@ -120,7 +121,7 @@ defmodule SymphonyElixir.Planning.Planner do
   def plan(issue, opts \\ []) do
     user_prompt = build_user_prompt(issue, opts)
 
-    with {:ok, plan_json} <- OneShot.request_json(@plan_system_prompt, user_prompt, opts),
+    with {:ok, plan_json} <- request_plan(user_prompt, opts),
          :ok <- validate_shape(plan_json),
          {:ok, plan} <-
            Planning.upsert_plan(%{
@@ -138,6 +139,28 @@ defmodule SymphonyElixir.Planning.Planner do
       {:error, _} = err ->
         Logger.error("Planner failed for issue=#{issue_id_for_log(issue)}: #{inspect(err)}")
         err
+    end
+  end
+
+  # Plan on the configured plan model (e.g. fable). If that session errors —
+  # most likely the model isn't available on this account/CLI — retry once on
+  # the default model (opus).
+  defp request_plan(user_prompt, opts) do
+    plan_model = Config.claude_plan_model()
+
+    case OneShot.request_json(@plan_system_prompt, user_prompt, Keyword.put(opts, :model, plan_model)) do
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} = err ->
+        fallback = Config.claude_model()
+
+        if plan_model && fallback && fallback != plan_model do
+          Logger.warning("Planner model #{plan_model} failed (#{inspect(reason)}); retrying with #{fallback}")
+          OneShot.request_json(@plan_system_prompt, user_prompt, Keyword.put(opts, :model, fallback))
+        else
+          err
+        end
     end
   end
 

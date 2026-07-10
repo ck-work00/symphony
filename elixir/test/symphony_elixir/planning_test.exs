@@ -39,6 +39,54 @@ defmodule SymphonyElixir.PlanningTest do
     )
   end
 
+  describe "Planner plan-model fallback" do
+    # Records every model the Planner tries, failing each session start so we
+    # can observe the fable → opus retry without a real Claude session.
+    defmodule FailingSession do
+      def start_session(_workspace, _session_id, opts) do
+        Process.put(:models_tried, Process.get(:models_tried, []) ++ [Keyword.get(opts, :model)])
+        {:error, :model_unavailable}
+      end
+
+      def send_prompt(_session, _prompt, _turn), do: :ok
+      def await_jsonl(_session_id), do: {:error, :no_session}
+      def stop_session(_session), do: :ok
+    end
+
+    test "retries on the default model when the plan model's session fails" do
+      root = Path.join(System.tmp_dir!(), "symphony-planner-fallback-#{System.unique_integer([:positive])}")
+      File.mkdir_p!(root)
+      workflow_file = Path.join(root, "WORKFLOW.md")
+
+      File.write!(workflow_file, """
+      ---
+      claude:
+        model: opus
+        plan_model: fable
+      ---
+      prompt
+      """)
+
+      SymphonyElixir.Workflow.set_workflow_file_path(workflow_file)
+
+      on_exit(fn ->
+        Application.delete_env(:symphony_elixir, :workflow_file_path)
+        File.rm_rf(root)
+      end)
+
+      Process.put(:models_tried, [])
+      issue = %{"id" => "linear-uuid-9", "identifier" => "SYM-9", "title" => "t", "description" => "d"}
+      opts = [session_module: FailingSession, cwd: System.tmp_dir!()]
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        assert {:error, {:start_session_failed, :model_unavailable}} =
+                 SymphonyElixir.Planning.Planner.plan(issue, opts)
+      end)
+
+      assert Process.get(:models_tried) == ["fable", "opus"]
+    end
+  end
+
   describe "render_plan_comment/1" do
     test "renders each row with a state marker, state, description, and rationale" do
       {:ok, plan} = Planning.upsert_plan(plan_attrs())

@@ -215,11 +215,22 @@ fi
 
 # Skip the heavy stop/start cycle when the backend is already healthy.
 # gf_platform's main_proxy routes by Host; procurement answers on localhost.
+# Healthy = Phoenix answers with 200 (live GraphQL) or 410 (procurement's
+# intentional /gql tombstone after the React/GraphQL removal). Anything else —
+# no listener (000), 5xx from a zombie — is unhealthy. Never use `curl -f`
+# here: it turns the 410 into a curl failure and the check can never pass.
+backend_healthy() {
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://localhost:$PHOENIX_PORT/gql" \
+    -H "Host: $HEALTH_HOST" -H "Content-Type: application/json" \
+    -d '{"query":"{ __typename }"}' 2>/dev/null)
+  [ "$code" = "200" ] || [ "$code" = "410" ]
+}
+
 BACKEND_HEALTHY=false
 HEALTH_HOST="localhost"
 [ "$POOL" = "platform" ] && HEALTH_HOST="local.gearflow.com"
-if curl -sf "http://localhost:$PHOENIX_PORT/gql" -H "Host: $HEALTH_HOST" -H "Content-Type: application/json" \
-   -d '{"query":"{ __typename }"}' 2>/dev/null | grep -q data; then
+if backend_healthy; then
   BACKEND_HEALTHY=true
 fi
 
@@ -274,12 +285,15 @@ CLAIM_COMPLETE=1
 if [ "$BACKEND_HEALTHY" = "false" ]; then
   direnv exec . devenv processes down 2>/dev/null || true
   sleep 2
-  direnv exec . devenv up -d postgres backend frontend 2>&1 | tail -3 || true
+  # No `frontend` process for procurement: the React frontend/ tree was deleted
+  # repo-wide (GEA-4136) and its devenv process just errors on `cd frontend`.
+  PROCS="postgres backend"
+  [ "$POOL" = "platform" ] && PROCS="postgres backend frontend"
+  direnv exec . devenv up -d $PROCS 2>&1 | tail -3 || true
   echo "Waiting for backend on port $PHOENIX_PORT..."
   BACKEND_UP=false
   for _ in $(seq 1 60); do
-    if curl -sf "http://localhost:$PHOENIX_PORT/gql" -H "Host: $HEALTH_HOST" -H "Content-Type: application/json" \
-       -d '{"query":"{ __typename }"}' 2>/dev/null | grep -q data; then
+    if backend_healthy; then
       BACKEND_UP=true
       break
     fi

@@ -49,8 +49,10 @@ direnv exec . devenv up -d backend frontend
 # Wait for backend to be ready (check every 3s, up to 90s)
 echo "Waiting for backend on port $APP_PORT..."
 for i in $(seq 1 30); do
-  if curl -sf "http://localhost:$APP_PORT/gql" -H "Content-Type: application/json" \
-     -d '{"query":"{ __typename }"}' 2>/dev/null | grep -q data; then
+  # 200 = live GraphQL; 410 = procurement's intentional /gql tombstone (backend up).
+  CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://localhost:$APP_PORT/gql" \
+    -H "Content-Type: application/json" -d '{"query":"{ __typename }"}' 2>/dev/null)
+  if [ "$CODE" = "200" ] || [ "$CODE" = "410" ]; then
     echo "Backend ready after $((i * 3))s"
     echo "Phoenix: http://localhost:$APP_PORT"
     echo "Frontend: http://localhost:$FRONT_PORT"

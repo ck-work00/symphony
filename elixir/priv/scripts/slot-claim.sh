@@ -163,8 +163,12 @@ fi
 BACKEND_HEALTHY=false
 HEALTH_HOST="localhost"
 [ "$POOL_PREFIX" = "platform" ] && HEALTH_HOST="local.gearflow.com"
-if curl -sf "http://localhost:$PHOENIX_PORT/gql" -H "Host: $HEALTH_HOST" -H "Content-Type: application/json" \
-   -d '{"query":"{ __typename }"}' 2>/dev/null | grep -q data; then
+# Healthy = 200 (live GraphQL) or 410 (procurement's intentional /gql tombstone
+# after the React/GraphQL removal). `curl -f` would turn the 410 into a failure.
+HEALTH_CODE=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://localhost:$PHOENIX_PORT/gql" \
+  -H "Host: $HEALTH_HOST" -H "Content-Type: application/json" \
+  -d '{"query":"{ __typename }"}' 2>/dev/null)
+if [ "$HEALTH_CODE" = "200" ] || [ "$HEALTH_CODE" = "410" ]; then
   BACKEND_HEALTHY=true
 fi
 

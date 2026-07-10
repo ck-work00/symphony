@@ -36,7 +36,7 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
   # buffer (e.g. while the welcome splash is still rendering at startup). A paste
   # sent in that window is silently dropped, so we verify the text landed in the
   # input and re-paste a few times before giving up.
-  @paste_attempts 5
+  @paste_attempts 8
 
   @type session_handle :: %{
           session_id: String.t(),
@@ -284,7 +284,20 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
   # rendered slower than the settle delay won't be duplicated on the next attempt.
   # A single Ctrl-U only clears one visual line, so we repeat it to wipe a
   # multi-line input (e.g. an accumulated "[Pasted text]" block) entirely.
-  defp paste_until_visible(_session_name, _prompt_file, _prompt, 0), do: {:error, :paste_not_visible}
+  defp paste_until_visible(session_name, _prompt_file, _prompt, 0) do
+    # The error path kills this session, destroying the evidence — log the pane
+    # tail first so a paste failure is diagnosable post-mortem.
+    case tmux(["capture-pane", "-t", pane(session_name), "-p"]) do
+      {output, 0} ->
+        tail = output |> String.split("\n") |> Enum.take(-15) |> Enum.join("\n")
+        Logger.warning("paste_not_visible for #{session_name}; pane tail:\n#{tail}")
+
+      _ ->
+        :ok
+    end
+
+    {:error, :paste_not_visible}
+  end
 
   defp paste_until_visible(session_name, prompt_file, prompt, attempts_left) do
     with {_, 0} <- tmux(["send-keys", "-t", pane(session_name), "-N", "25", "C-u"]),
@@ -294,6 +307,11 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
       if paste_visible?(session_name, prompt) do
         :ok
       else
+        # On a loaded machine (several workers compiling at once) the TUI can
+        # lag well past one settle window — observed as :paste_not_visible
+        # storms during dispatch churn. Back off progressively before the next
+        # attempt instead of burning all retries inside a few seconds.
+        Process.sleep((@paste_attempts - attempts_left + 1) * 1_000)
         paste_until_visible(session_name, prompt_file, prompt, attempts_left - 1)
       end
     else
@@ -369,16 +387,24 @@ defmodule SymphonyElixir.Claude.TmuxCLI do
   # launched with (sourced .env) silently vanishes from agent sessions unless
   # passed explicitly. A tester that was promised $LINEAR_API_KEY_AUTOMATION
   # and didn't have it went hunting through the macOS keychain and 1Password
-  # for it — deliver on the promise instead.
+  # for it — deliver on the promise instead. SYMPHONY_SCRIPTS likewise: the
+  # tester prompt says `${SYMPHONY_SCRIPTS}linear-upload-image.sh`; without
+  # the var, testers hand-roll unverified Linear uploads and post dangling
+  # asset URLs (broken screenshots, observed GEA-4478).
   @session_env_passthrough ~w(LINEAR_API_KEY LINEAR_API_KEY_AUTOMATION)
 
   defp session_env_args do
-    Enum.flat_map(@session_env_passthrough, fn var ->
-      case System.get_env(var) do
-        nil -> []
-        value -> ["-e", "#{var}=#{value}"]
-      end
-    end)
+    passthrough =
+      Enum.flat_map(@session_env_passthrough, fn var ->
+        case System.get_env(var) do
+          nil -> []
+          value -> ["-e", "#{var}=#{value}"]
+        end
+      end)
+
+    # SYMPHONY_SCRIPTS is computed, not inherited: the beam env doesn't carry
+    # it (the hook runner computes it the same way for hook processes).
+    passthrough ++ ["-e", "SYMPHONY_SCRIPTS=#{SymphonyElixir.Workspace.scripts_path("")}/"]
   end
 
   defp new_tmux_session(session_name, workspace) do

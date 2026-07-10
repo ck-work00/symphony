@@ -1,5 +1,104 @@
 # Symphony TODO
 
+## `:paste_not_visible` crash storm pinned one issue's dispatches for hours
+Observed 2026-07-09, 19:19–20:53Z: every GEA-4394 Test dispatch (25+ in a row) crashed
+with `:paste_not_visible` from `TmuxCLI.paste_until_visible/4` (~3.5 min per attempt,
+mostly hook time), while other issues' dispatches pasted fine in the same window. An
+orchestrator restart cleared it — the next GEA-4394 dispatch pasted and ran normally.
+Root cause not caught live (the failing sessions are killed on error, so the pane was
+never inspected). Impact compounds: each failed dispatch still ran `enforce_pr_draft`,
+flapping the PR's draft state, and burned a slot claim/release cycle.
+
+Next time it fires: capture the worker pane BEFORE the runner kills the session
+(e.g. on paste failure, `tmux capture-pane -p` into the run's log/DB row), so the
+failure is diagnosable post-mortem. That capture hook is the fix to build first.
+
+## Stale `.symphony_slot` makes a retry adopt a slot dir as its workspace → double-booked slots, destroyed work
+`Workspace.create_for_issue` ends with `resolve_slot_workspace/1`: if the issue's
+symphony workspace still holds a `.symphony_slot` from a *previous* run, the retry's
+"workspace" becomes that old slot directory — before any claim happens. The before_run
+hook then runs with `WORKSPACE=<slot dir>`: its re-entry check fails (the old lease is
+gone or mismatched), so it claims the next *free* lease (a different slot number) and
+writes a contract into the current slot dir naming the other slot. From there:
+
+- The agent works in slot X's directory while holding slot Y's lease, so slot X's lease
+  looks free and another issue claims it legitimately → two agents in one working tree.
+- The winner's provisioning `git reset --hard` destroys the loser's uncommitted work.
+- Release hooks follow the corrupted contract and delete the *other* issue's lease,
+  spreading the mismatch to more slots on each cycle.
+
+Observed 2026-07-08: GEA-3370's 10:24 retry dispatched with
+`workspace=gf_procurement-slot6` (log line 20319, symphony.log.3), claimed slot4's lease
+with `"workspace": ...slot6`, and worked in slot6 — which GEA-4394 then claimed
+legitimately at 10:38. At 10:46 the GEA-3370 chain reset slot6 to main, destroying
+GEA-4394's uncommitted work (nothing pushed; no `gea-4394` branch on origin), and its
+release deleted GEA-4394's slot6 lease. GEA-4394 escalated needs_human at 10:53. By
+11:00 the contracts were fully crossed (slot4-dir says slot5, slot5-dir says slot4 with a
+GEA-4137 branch, slot6-dir says slot4) and new dispatches (GEA-4395/2791/3245) were
+churning open run rows.
+
+Fix directions:
+- Never resolve a slot at *create* time from a leftover contract. Either always pass the
+  symphony workspace to before_run (the claim script's re-entry branch already handles
+  legitimate re-claims), or validate before adopting: the lease named in `.symphony_slot`
+  must exist, be symphony-owned, and name this issue + workspace; otherwise delete the
+  stale contract and start clean.
+- Delete the workspace's `.symphony_slot` whenever its lease is released (after_run,
+  before_remove, stale sweep).
+- Claim-script guard: refuse to run with `$WORKSPACE` inside `local-dev/` slot dirs.
+
+## needs_human_message truncated at 500 chars
+The escalation message is cut mid-sentence at exactly 500 chars — in the DB column and
+in the Linear comment, so the human-facing ask can lose its options. Observed 2026-07-02
+(GEA-4259: option "(b)" lost) and 2026-07-08 (GEA-4394: slot-conflict detail lost).
+Fix: raise/remove the cap where the message is captured; the column is TEXT.
+
+## `mix test` reaps live tmux sessions and slot leases
+Tests boot the app supervision tree, and the startup reapers run against shared system
+state — real tmux sessions and real `local-dev/registry/` slot leases — even in
+`MIX_ENV=test`. The DB is isolated (`symphony_test.db`); tmux and the registry are not.
+
+Observed 2026-07-02: a `mix test` run reaped the live GEA-4226 Resolve Review worker's
+Claude tmux session (and slot4's lease); the worker then hit the 10-minute stall timeout
+and had to be re-dispatched. Every `mix test` on a machine with a running orchestrator
+risks killing in-flight work.
+
+Fix: skip tmux-session and slot-lease reaping (any shared-state mutation at startup)
+when `Mix.env() == :test`.
+
+## Resolve Review workers get stall-killed while waiting on CodeRabbit
+Resolve Review workers finish the triage (push fixes, reply to every thread), then sit
+silent waiting for CodeRabbit's re-review. That quiet wait exceeds the 10-minute stall
+timeout, so the orchestrator kills a worker doing exactly what it should.
+
+Observed 2026-07-02 (GEA-4226 / gf_procurement PR #1768): worker pushed the fix and
+replied to all 4 threads, was stall-terminated 2 minutes later while waiting; the next
+dispatch found everything done and closed in 5 minutes. Cost: one wasted dispatch per
+review round + misleading `stall` failures in the runs table.
+
+Fix: emit a heartbeat (log line / explicit poll loop) while waiting on CodeRabbit, or a
+per-phase stall timeout with a longer window for Resolve Review.
+
+## slot-claim hangs on a dead-but-listening backend squatting the slot's Phoenix port
+An orphaned backend beam from a previous run can keep listening on the slot's Phoenix
+port while returning HTTP 500 (its worktree was git-reset under it). The new `devenv up`
+backend can't bind the port, the health-check loop polls the broken zombie for 180s, and
+the hook dies at the 300s `before_run` timeout — on every retry, until the issue burns
+its failure budget and stops.
+
+Observed 2026-07-02 (GEA-4259 / slot4): a day-old orphaned beam held port 3024 answering
+500; four dispatches failed with `{:workspace_hook_timeout, "before_run", 300000}` until
+the zombie was killed by hand — the next attempt succeeded immediately. Contributing:
+`devenv processes down` can't stop prior runs' supervisors (unique socket path per
+`devenv up`), so orphaned process-compose instances accumulate.
+
+Fix: in slot-claim, if the slot's Phoenix port is LISTENING but the health check returns
+non-200, kill the listener (ephemeral slots — it can only be a leftover) or fail fast
+with a clear error. Consider sweeping orphaned process-compose supervisors whose lease is
+gone. Related: the `runs` table holds ~44 `finished_at IS NULL` rows from crashed or
+restarted runs — a startup sweep closing rows for runs that aren't alive would stop
+"active runs" queries from lying.
+
 ## Post-ship review gate
 After a worker ships a PR, the orchestrator should poll CI and review status before marking the issue done. Currently the judge sees `pr_created: true` and moves on immediately — there's no time for CI to run or reviewers (CodeRabbit, humans) to post comments.
 

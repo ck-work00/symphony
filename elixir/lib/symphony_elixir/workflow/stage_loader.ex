@@ -152,14 +152,25 @@ defmodule SymphonyElixir.Workflow.StageLoader do
     end)
   end
 
-  # Collect lines from a heading until the next ## heading (exclusive)
+  # Collect lines from a heading until the next ## heading (exclusive).
+  # Fence-aware: a "## " line inside a ``` code block is content (e.g. the
+  # Tester Report template), not a section boundary.
   defp collect_until_next_heading([heading | rest]) do
-    body =
-      Enum.take_while(rest, fn line ->
-        not String.starts_with?(line, "## ")
+    {body, _in_fence} =
+      Enum.reduce_while(rest, {[], false}, fn line, {acc, in_fence} ->
+        cond do
+          String.starts_with?(String.trim_leading(line), "```") ->
+            {:cont, {[line | acc], not in_fence}}
+
+          not in_fence and String.starts_with?(line, "## ") ->
+            {:halt, {acc, in_fence}}
+
+          true ->
+            {:cont, {[line | acc], in_fence}}
+        end
       end)
 
-    [heading | body]
+    [heading | Enum.reverse(body)]
   end
 
   defp collect_until_next_heading([]), do: []

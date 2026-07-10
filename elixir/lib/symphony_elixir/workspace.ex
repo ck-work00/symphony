@@ -20,10 +20,15 @@ defmodule SymphonyElixir.Workspace do
       with :ok <- validate_workspace_path(workspace),
            {:ok, created?} <- ensure_workspace(workspace),
            :ok <- maybe_run_after_create_hook(workspace, issue_context, created?) do
-        # If the after_create hook claimed a pool slot, use the slot directory
-        # instead of the symphony workspace directory.
-        effective_workspace = resolve_slot_workspace(workspace)
-        {:ok, effective_workspace}
+        # Always hand back the symphony workspace — never a slot directory.
+        # Resolving a leftover .symphony_slot to its slot dir here (pre-claim)
+        # made interrupted-run retries pass a SLOT DIR as $WORKSPACE to the
+        # before_run hook, whose re-entry check then failed and claimed a
+        # second slot while writing a contract into the first slot's tree —
+        # the root of the double-booked-slot incidents (GEA-4394/GEA-3370).
+        # The hook re-claims idempotently from the contract in this workspace,
+        # and agents cd into the slot via .symphony_slot themselves.
+        {:ok, workspace}
       end
     rescue
       error in [ArgumentError, ErlangError, File.Error] ->
@@ -379,42 +384,6 @@ defmodule SymphonyElixir.Workspace do
   end
 
   def release_pool_slot_for_issue(_identifier), do: :ok
-
-  defp resolve_slot_workspace(workspace) do
-    slot_file = Path.join(workspace, ".symphony_slot")
-
-    case File.read(slot_file) do
-      {:ok, content} ->
-        case parse_slot_directory(content) do
-          nil ->
-            Logger.debug("No DIRECTORY in .symphony_slot, using workspace as-is")
-            workspace
-
-          slot_dir when is_binary(slot_dir) ->
-            if File.dir?(slot_dir) do
-              Logger.info("Using pool slot directory=#{slot_dir} instead of workspace=#{workspace}")
-              slot_dir
-            else
-              Logger.warning("Pool slot directory=#{slot_dir} does not exist, falling back to workspace")
-              workspace
-            end
-        end
-
-      {:error, _} ->
-        workspace
-    end
-  end
-
-  defp parse_slot_directory(content) do
-    content
-    |> String.split("\n")
-    |> Enum.find_value(fn line ->
-      case String.split(line, "=", parts: 2) do
-        ["DIRECTORY", dir] -> String.trim(dir)
-        _ -> nil
-      end
-    end)
-  end
 
   @doc """
   `{slot_working_copy_dir, branch}` for the slot currently leased to `identifier`,

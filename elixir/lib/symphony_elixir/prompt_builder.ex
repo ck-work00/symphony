@@ -131,6 +131,28 @@ defmodule SymphonyElixir.PromptBuilder do
     end
   end
 
+  @doc """
+  Continuation for a single-phase dispatch: keep the agent inside its phase
+  instead of the generic (Implement-flavored) continuation template.
+  """
+  @spec build_phase_continuation_prompt(map(), String.t(), pos_integer(), pos_integer(), [map()]) ::
+          String.t()
+  def build_phase_continuation_prompt(_issue, phase, turn_number, max_turns, comments) do
+    """
+    Continuation guidance (turn #{turn_number}/#{max_turns}):
+
+    You were dispatched for the **#{phase} phase only**. This is the same session
+    as turn 1 — your #{phase} instructions are already in your context.
+    #{format_comments_section(comments)}
+    If the #{phase} phase is already complete (your report/verdict is posted, or
+    your fix is pushed), end your turn now with no further action. Otherwise
+    resume the #{phase} phase from where you left off.
+
+    Do NOT implement plan rows, start other phases, or repeat completed work.
+    Do NOT look for more work. Do NOT expand scope.
+    """
+  end
+
   defp default_continuation_prompt(_issue, turn_number, max_turns, comments) do
     comments_section = format_comments_section(comments)
 

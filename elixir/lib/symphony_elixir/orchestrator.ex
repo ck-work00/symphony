@@ -890,14 +890,17 @@ defmodule SymphonyElixir.Orchestrator do
     # the issue, or block it for a human.
     case plan_action(issue, metadata) do
       {:dispatch, metadata} ->
-        # Work remains: keep the PR a draft (undo a worker that promoted it early).
-        enforce_pr_draft(issue, true)
+        # Draft while the code is still being written/verified. The post-approval
+        # phases (Fix CI, Resolve Review) only run after a tester APPROVE, so
+        # promote the PR to ready there — that's what invites CodeRabbit, whose
+        # review the Resolve Review phase then triages.
+        enforce_pr_draft(issue, not post_approval_dispatch?(metadata), metadata[:existing_pr_url])
         spawn_worker(state, issue, attempt, metadata)
 
       :done ->
         Logger.info("Plan complete and tester-approved for #{issue_context(issue)}; completing issue")
         # Plan graded complete: now promote the draft to ready-for-review.
-        enforce_pr_draft(issue, false)
+        enforce_pr_draft(issue, false, metadata[:existing_pr_url])
         complete_issue(state, issue.id)
 
       {:blocked, reason} ->
@@ -905,9 +908,19 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  # Keep a worker's PR draft until the plan grades complete, then promote it.
+  # Fix CI, Resolve Review, and Resolve Conflicts are only ever dispatched after
+  # a tester APPROVE, so their presence in retask_phases is the "tested and
+  # approved" signal.
+  defp post_approval_dispatch?(metadata) do
+    Enum.any?(
+      Map.get(metadata, :retask_phases) || [],
+      &(&1 in ["Fix CI", "Resolve Review", "Resolve Conflicts"])
+    )
+  end
+
+  # Keep a worker's PR draft until the tester approves, then promote it.
   # Best-effort + off the orchestrator loop: never let a gh hiccup stall dispatch.
-  defp enforce_pr_draft(issue, want_draft?) do
+  defp enforce_pr_draft(issue, want_draft?, pr_url) do
     identifier = Map.get(issue, :identifier)
 
     if is_binary(identifier) do
@@ -916,6 +929,13 @@ defmodule SymphonyElixir.Orchestrator do
           case Workspace.slot_lease_for_issue(identifier) do
             {slot_dir, branch} when is_binary(branch) and branch != "" ->
               Evaluator.set_pr_draft(slot_dir, branch, want_draft?)
+
+            _ when is_binary(pr_url) ->
+              # No live lease (slots are released between dispatches) — flip the
+              # PR by URL; gh resolves the repo from it, no local checkout needed.
+              args = ["pr", "ready", pr_url] ++ if want_draft?, do: ["--undo"], else: []
+              System.cmd("gh", args, stderr_to_stdout: true)
+              Logger.info("enforce_pr_draft: set #{pr_url} draft=#{want_draft?} via URL")
 
             _ ->
               :ok
@@ -953,8 +973,15 @@ defmodule SymphonyElixir.Orchestrator do
 
         Logger.info("Dispatching issue to agent: #{issue_context(issue)} pid=#{inspect(pid)} attempt=#{inspect(attempt)}")
 
-        # Claim the issue in Linear: move to "In Progress" and assign to us
-        case Tracker.claim_issue(issue.id, "In Progress") do
+        # Claim the issue in Linear: move to "In Progress" and assign to us.
+        # An issue already In Review (ready PR, CodeRabbit engaged) keeps that
+        # state — a CR-triage dispatch must not demote it back to In Progress.
+        claim_state =
+          if is_binary(issue.state) and normalize_issue_state(issue.state) == "in review",
+            do: "In Review",
+            else: "In Progress"
+
+        case Tracker.claim_issue(issue.id, claim_state) do
           :ok ->
             Logger.info("Claimed issue in Linear: #{issue_context(issue)}")
 
@@ -1096,6 +1123,12 @@ defmodule SymphonyElixir.Orchestrator do
                 Logger.info("Tester approved #{issue.identifier} but CI is red; dispatching Fix CI: #{reason}")
                 reopen_and_dispatch(issue, metadata, plan, reason, "Fix CI")
 
+              {:conflicts, reason} ->
+                # Main moved under the finished PR. Same shape as Resolve Review:
+                # rows stay done, the worker only rebases, resolves, and pushes.
+                Logger.info("Tester approved #{issue.identifier} but PR is conflicted: #{reason}")
+                dispatch_review(issue, metadata, plan, reason, "Resolve Conflicts")
+
               {:request_changes, reason} ->
                 # A reviewer (CodeRabbit or human) requested changes. Dispatch the
                 # dedicated Resolve Review phase WITHOUT reopening the plan's rows:
@@ -1122,6 +1155,11 @@ defmodule SymphonyElixir.Orchestrator do
             # dispatch an Implement row-closer; the Grader re-verifies on the next
             # completion, snapping untouched rows back to done.
             reopen_and_dispatch(issue, metadata, plan, reason)
+
+          {:blocked, reason} ->
+            # Tester BLOCKED: verification is impossible (infra down, missing
+            # dependency) — a human has to unblock. Stop dispatching.
+            {:blocked, {:tester_blocked, reason}}
         end
     end
   end
@@ -1171,14 +1209,14 @@ defmodule SymphonyElixir.Orchestrator do
   # Dispatch record is created, so the Grader does not run — nothing can flip the
   # done rows back open and bounce the issue into Implement/Test. The review gate
   # keeps re-dispatching this until the review approves.
-  defp dispatch_review(issue, metadata, plan, reason) do
-    Logger.info("Dispatching Resolve Review for #{issue.identifier} (#{reason}); rows left done")
+  defp dispatch_review(issue, metadata, plan, reason, phase \\ "Resolve Review") do
+    Logger.info("Dispatching #{phase} for #{issue.identifier} (#{reason}); rows left done")
 
     metadata =
       metadata
-      |> Map.put(:retask_phases, ["Resolve Review"])
+      |> Map.put(:retask_phases, [phase])
       |> Map.put(:plan_rows, SymphonyElixir.Planning.Plan.rows(plan))
-      |> Map.put(:model, model_for_phase("Resolve Review"))
+      |> Map.put(:model, model_for_phase(phase))
       |> Map.delete(:plan_dispatch_id)
       |> Map.delete(:assigned_rows)
 
@@ -1233,8 +1271,20 @@ defmodule SymphonyElixir.Orchestrator do
   # failure (only explicit failure states are) — the tester runs far longer than
   # CI, so checks are effectively always resolved by the time the gate runs.
   defp external_ship_gate(pr_url) do
-    with :ok <- ci_gate(pr_url),
+    with :ok <- merge_gate(pr_url),
+         :ok <- ci_gate(pr_url),
          :ok <- review_gate(pr_url) do
+      :ok
+    end
+  end
+
+  # Conflicts first: a conflicted PR must rebase before CI/review state means
+  # anything, and main moving under a parked PR is how "done" issues silently
+  # become unmergeable.
+  defp merge_gate(pr_url) do
+    if pr_conflicting?(pr_url) do
+      {:conflicts, "PR has merge conflicts with its base branch — rebase and resolve"}
+    else
       :ok
     end
   end
@@ -1364,6 +1414,12 @@ defmodule SymphonyElixir.Orchestrator do
 
           verdict.verdict == "APPROVE" ->
             :approved
+
+          verdict.verdict == "BLOCKED" ->
+            # BLOCKED means the tester couldn't verify for reasons no Implement
+            # worker can fix (infra down, missing dependency). Reopening rows
+            # here just grinds no-progress Implement dispatches forever.
+            {:blocked, "tester BLOCKED at #{DateTime.to_iso8601(verdict.inserted_at)}"}
 
           true ->
             {:request_changes, "tester #{verdict.verdict} at #{DateTime.to_iso8601(verdict.inserted_at)}"}

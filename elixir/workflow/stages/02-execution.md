@@ -69,8 +69,8 @@ The PR description doesn't need a Contract or audit block — the orchestrator m
 ALWAYS open the PR as a draft, and never run `gh pr ready`. Symphony iterates across
 multiple dispatches, so a ready (non-draft) PR trips the "PR opened -> In Review"
 automation and pulls reviewers (CodeRabbit) in on half-finished work. The PR stays a
-draft until the work is complete and verified; a human promotes it to ready-for-review
-after reviewing the evidence on Linear.
+draft until the work is complete and verified; the orchestrator promotes it to
+ready-for-review once the plan grades complete and the tester approves.
 
 ### Step 5: Stop
 
@@ -79,7 +79,7 @@ End your turn. Do not:
 - Update a `WORKPAD.md` file (the plan lives in Symphony's database, not the repo).
 - Take screenshots or post test results (the Test phase has a tester sub-agent for that).
 - Re-run anything unless you broke a test.
-- Mark the PR ready for review / run `gh pr ready` (it stays a draft until a human promotes it).
+- Mark the PR ready for review / run `gh pr ready` (the orchestrator promotes it after tester approval).
 
 The orchestrator's Grader will inspect your diff and test output, mark each assigned row `done` / `partial` / `missing`, and decide whether to dispatch another worker for the gaps or move to the Test phase.
 

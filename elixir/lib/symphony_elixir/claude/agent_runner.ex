@@ -288,8 +288,17 @@ defmodule SymphonyElixir.Claude.AgentRunner do
     end
   end
 
-  defp build_turn_prompt(issue, _opts, turn_number, max_turns, comments) do
-    PromptBuilder.build_continuation_prompt(issue, turn_number, max_turns, comments)
+  defp build_turn_prompt(issue, opts, turn_number, max_turns, comments) do
+    # A single-phase dispatch (Test, Resolve Review, Fix CI, ...) must not get
+    # the generic Implement-flavored continuation — telling a read-only tester
+    # to "close the assigned rows" derails it into a needs-help escalation.
+    case Keyword.get(opts, :retask_phases) do
+      [single_phase] ->
+        PromptBuilder.build_phase_continuation_prompt(issue, single_phase, turn_number, max_turns, comments)
+
+      _ ->
+        PromptBuilder.build_continuation_prompt(issue, turn_number, max_turns, comments)
+    end
   end
 
   defp fetch_new_comments(_issue, _comment_fetcher, 1, _comments_after), do: []

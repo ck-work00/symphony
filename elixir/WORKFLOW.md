@@ -10,6 +10,7 @@ tracker:
     - Shaped
     - Todo
     - In Progress
+    - In Review
   terminal_states:
     - Closed
     - Cancelled
@@ -42,9 +43,12 @@ claude:
   max_turns: 0
   stall_timeout_ms: 600000
   turn_timeout_ms: 3600000
-  # Per-stage model overrides (fall back to `model` when unset). The
-  # context-constrained verification/fix stages run on Sonnet; Implement and
-  # the planner stay on the default (top) model.
+  model: opus
+  # Per-stage model overrides (fall back to `model` when unset). Planning
+  # runs on Fable and falls back to `model` (Opus) if the Fable session
+  # fails; the context-constrained verification/fix stages run on Sonnet;
+  # Implement stays on the default model (Opus).
+  plan_model: fable
   test_model: sonnet
   grade_model: sonnet
   fix_ci_model: sonnet
@@ -190,9 +194,9 @@ Post test results — including screenshots — to the Linear issue:
 
 After shipping the PR, stop. Do not continue working. Do not look for more work.
 Leave the PR as a **draft** -- do NOT run `gh pr ready` and do NOT move the issue's
-status yourself. The PR stays a draft (and the issue stays In Progress) until a human
-reviews the evidence on Linear and promotes it to ready-for-review; that ready
-transition is what moves the issue to In Review and invites CodeRabbit.
+status yourself. Symphony promotes the draft to ready-for-review once the plan is
+graded complete and the tester approves; that ready transition is what moves the
+issue to In Review and invites CodeRabbit.
 
 ## Environment Notes
 
@@ -216,7 +220,7 @@ If a PR already exists for this issue, run this checklist:
 4. **Incomplete testing**: If issue comments indicate testing gaps, go back to Phase 4 (Test).
 5. **All clear**: If CI is green, no conflicts, and reviews are addressed, push and stop.
    Do NOT decide the issue is "done" or run `gh pr ready` — the grader decides completion
-   and a human promotes the draft.
+   and Symphony promotes the draft once the tester approves.
 
 After fixing any issues, re-run Phase 4 (Test) to verify nothing broke, then push.
 

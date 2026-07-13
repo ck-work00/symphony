@@ -70,9 +70,12 @@ echo "Releasing symphony slot $SLOT_NAME..."
 
 if [ -d "$DIR" ]; then
   cd "$DIR"
-  # Stop through devenv supervision; do NOT remove process-compose sockets —
-  # that orphans still-running processes from supervision.
-  direnv exec . devenv processes stop backend frontend 2>/dev/null || true
+  # Leave the backend RUNNING on release. Stopping it here forced every
+  # subsequent claim through a fresh devenv boot, and boots die under load
+  # (the intermittent Mix.start ETS crash) — a hot pool spent whole cycles
+  # rebooting instead of working. A healthy leftover backend hits the claim
+  # script's "already healthy, skip start" fast path; Phoenix dev-mode
+  # recompiles per request, so the reset-to-main code swap is safe.
 
   BRANCH=$(git branch --show-current 2>/dev/null || echo "unknown")
   git checkout -- . 2>/dev/null || true

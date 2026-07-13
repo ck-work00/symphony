@@ -1102,11 +1102,17 @@ defmodule SymphonyElixir.Orchestrator do
   # the worker's prompt — so it works even though the comment predates the
   # redispatch (the mid-run @agent fetch would miss it). Otherwise, the tester
   # gate decides.
+  # The reopen rationale that marks a dispatch as feedback-triggered; the marker
+  # rides in as each reopened row's rationale, which lands in the dispatch's
+  # assigned_rows_json — that is how last_feedback_dispatch_start recognizes
+  # which dispatches actually carried the feedback.
+  @agent_feedback_marker "Reviewer feedback via @agent"
+
   defp complete_plan_action(issue, metadata, plan) do
     case fresh_agent_feedback(issue, plan) do
       {:ok, feedback} ->
         Logger.info("Fresh @agent feedback on #{issue.identifier}; reopening rows to address it")
-        reopen_and_dispatch(issue, metadata, plan, "Reviewer feedback via @agent — address this: #{agent_feedback_snippet(feedback)}")
+        reopen_and_dispatch(issue, metadata, plan, "#{@agent_feedback_marker} — address this: #{agent_feedback_snippet(feedback)}")
 
       :none ->
         # Actionable ship work comes BEFORE the tester gate: merge conflicts,
@@ -1176,11 +1182,12 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
-  # The latest @agent comment, if it was posted after the last Implement
-  # dispatch finished — i.e. fresh feedback not yet acted on. Returns
-  # {:ok, body} | :none. Once an Implement dispatch runs in response (its
-  # finished_at moves past the comment) it is no longer fresh, so this does not
-  # re-trigger. Best-effort: any fetch error yields :none.
+  # The latest @agent comment, if no feedback-triggered Implement dispatch has
+  # STARTED since it was posted. Only a dispatch this gate itself triggered
+  # counts as handling the comment: an unrelated dispatch (Fix CI, a row-closer
+  # already in flight when the comment landed) never carried the feedback in
+  # its prompt, so neither its start nor its finish may mark the comment
+  # handled. Returns {:ok, body} | :none. Best-effort: fetch errors → :none.
   defp fresh_agent_feedback(issue, plan) do
     case SymphonyElixir.Linear.Client.fetch_issue_comments(Map.get(issue, :id)) do
       {:ok, comments} ->
@@ -1189,7 +1196,7 @@ defmodule SymphonyElixir.Orchestrator do
           |> Enum.filter(fn c -> c.created_at != nil and is_binary(c.body) and String.trim(c.body) != "" end)
           |> Enum.max_by(fn c -> DateTime.to_unix(c.created_at) end, fn -> nil end)
 
-        last = last_implement_dispatch_finish(plan)
+        last = last_feedback_dispatch_start(plan)
 
         cond do
           is_nil(latest) -> :none
@@ -1567,6 +1574,30 @@ defmodule SymphonyElixir.Orchestrator do
     |> then(fn
       nil -> nil
       d -> d.finished_at
+    end)
+  end
+
+  # When the last feedback-triggered Implement dispatch STARTED (start, not
+  # finish: a comment posted mid-run would finish "behind" finished_at and look
+  # handled without ever reaching a prompt). Feedback-triggered = the reopen
+  # rationale marker is in the dispatch's assigned rows.
+  defp last_feedback_dispatch_start(%SymphonyElixir.Planning.Plan{id: plan_id}) do
+    SymphonyElixir.Planning.dispatches_for_plan(plan_id)
+    |> Enum.filter(fn d ->
+      d.role == "implement" and d.started_at != nil and feedback_dispatch?(d)
+    end)
+    |> Enum.max_by(fn d -> DateTime.to_unix(d.started_at) end, fn -> nil end)
+    |> then(fn
+      nil -> nil
+      d -> d.started_at
+    end)
+  end
+
+  defp feedback_dispatch?(dispatch) do
+    (dispatch.assigned_rows_json || %{})
+    |> Map.get("rows", [])
+    |> Enum.any?(fn row ->
+      String.contains?(Map.get(row, "rationale") || "", @agent_feedback_marker)
     end)
   end
 

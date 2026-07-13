@@ -26,9 +26,19 @@ defmodule SymphonyElixir.History do
   @spec record_tester_verdict(String.t(), String.t(), String.t() | nil) ::
           {:ok, TesterVerdict.t()} | {:error, Ecto.Changeset.t()}
   def record_tester_verdict(issue_identifier, verdict, commit_sha \\ nil) do
-    %{issue_identifier: issue_identifier, verdict: verdict, commit_sha: commit_sha}
-    |> TesterVerdict.create_changeset()
-    |> Repo.insert()
+    # The SYMPHONY_VERDICT marker is re-extracted every time the session JSONL
+    # is re-read, so an unguarded insert piles up duplicates (observed: 139
+    # identical BLOCKED rows on one issue). Same verdict+sha as the latest row
+    # is a no-op re-observation, not a new verdict.
+    case latest_tester_verdict(issue_identifier) do
+      %TesterVerdict{verdict: ^verdict, commit_sha: ^commit_sha} = existing ->
+        {:ok, existing}
+
+      _ ->
+        %{issue_identifier: issue_identifier, verdict: verdict, commit_sha: commit_sha}
+        |> TesterVerdict.create_changeset()
+        |> Repo.insert()
+    end
   end
 
   @doc "The most recent tester verdict for an issue, or nil."

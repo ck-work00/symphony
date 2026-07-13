@@ -38,6 +38,10 @@ defmodule SymphonyElixir.Orchestrator do
       running: %{},
       completed: MapSet.new(),
       completed_history: [],
+      # Issues blocked for a human this session — never re-dispatched (unlike
+      # `completed`, which IS re-assessed each poll so ship gates re-run).
+      # A restart clears it: fresh orchestrator, fresh look.
+      blocked: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
@@ -739,6 +743,7 @@ defmodule SymphonyElixir.Orchestrator do
       candidate_issue?(issue, active_states, terminal_states) and
         !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
         suitable_issue?(issue) and
+        !MapSet.member?(state.blocked, issue.id) and
         !MapSet.member?(claimed, issue.id) and
         !Map.has_key?(running, issue.id) and
         available_slots(state) > 0 and
@@ -1104,63 +1109,70 @@ defmodule SymphonyElixir.Orchestrator do
         reopen_and_dispatch(issue, metadata, plan, "Reviewer feedback via @agent — address this: #{agent_feedback_snippet(feedback)}")
 
       :none ->
-        case tester_gate(issue, plan) do
-          :approved ->
-            # A tester APPROVE is necessary but not sufficient. Before declaring
-            # the issue done, enforce the objective ship signals the tester can't
-            # see: CI must be green and the PR must carry no requested-changes
-            # review. Either failing reopens the rows so an Implement row-closer
-            # fixes it instead of shipping a red PR.
-            case external_ship_gate(metadata[:existing_pr_url]) do
-              :ok ->
-                :done
+        # Actionable ship work comes BEFORE the tester gate: merge conflicts,
+        # red CI, and requested-changes reviews need no browser walk, so a
+        # missing or BLOCKED tester verdict must never wall them off (a tester
+        # blocked on dead infra used to park the issue with CI failures and
+        # CodeRabbit comments left unaddressed). :done still requires both —
+        # the tester gate runs once the PR is externally clean.
+        case external_ship_gate(metadata[:existing_pr_url]) do
+          {:conflicts, reason} ->
+            # Main moved under the PR. Same shape as Resolve Review:
+            # rows stay done, the worker only rebases, resolves, and pushes.
+            Logger.info("PR for #{issue.identifier} is conflicted; dispatching Resolve Conflicts: #{reason}")
+            dispatch_review(issue, metadata, plan, reason, "Resolve Conflicts")
 
-              {:ci, reason} ->
-                # CI is red. Dispatch the dedicated Fix CI phase — its prompt
-                # pulls the actual failing job logs and reproduces locally,
-                # instead of a generic Implement row-closer that only sees the
-                # failing check names and never learns what broke.
-                Logger.info("Tester approved #{issue.identifier} but CI is red; dispatching Fix CI: #{reason}")
-                reopen_and_dispatch(issue, metadata, plan, reason, "Fix CI")
-
-              {:conflicts, reason} ->
-                # Main moved under the finished PR. Same shape as Resolve Review:
-                # rows stay done, the worker only rebases, resolves, and pushes.
-                Logger.info("Tester approved #{issue.identifier} but PR is conflicted: #{reason}")
-                dispatch_review(issue, metadata, plan, reason, "Resolve Conflicts")
-
-              {:request_changes, reason} ->
-                # A reviewer (CodeRabbit or human) requested changes. Dispatch the
-                # dedicated Resolve Review phase WITHOUT reopening the plan's rows:
-                # the implementation is done and tester-approved — CR triage only
-                # addresses review threads and re-checks the review gate. Reopening
-                # rows here would send the issue back through Implement/Test and it
-                # would never finish the CR pass.
-                Logger.info("Tester approved #{issue.identifier} but review requested changes: #{reason}")
-                dispatch_review(issue, metadata, plan, reason)
-            end
-
-          :needs_test ->
-            Logger.info("Plan code rows complete for #{issue.identifier}; dispatching the Test tester sub-agent")
-
-            metadata =
-              metadata
-              |> Map.put(:retask_phases, ["Test"])
-              |> Map.put(:model, Config.claude_test_model())
-
-            {:dispatch, metadata}
+          {:ci, reason} ->
+            # CI is red. Dispatch the dedicated Fix CI phase — its prompt
+            # pulls the actual failing job logs and reproduces locally,
+            # instead of a generic Implement row-closer that only sees the
+            # failing check names and never learns what broke.
+            Logger.info("CI is red for #{issue.identifier}; dispatching Fix CI: #{reason}")
+            reopen_and_dispatch(issue, metadata, plan, reason, "Fix CI")
 
           {:request_changes, reason} ->
-            # The tester found gaps but can't edit code. Reopen the done rows and
-            # dispatch an Implement row-closer; the Grader re-verifies on the next
-            # completion, snapping untouched rows back to done.
-            reopen_and_dispatch(issue, metadata, plan, reason)
+            # A reviewer (CodeRabbit or human) requested changes. Dispatch the
+            # dedicated Resolve Review phase WITHOUT reopening the plan's rows:
+            # the implementation is done — CR triage only addresses review
+            # threads and re-checks the review gate. Reopening rows here would
+            # send the issue back through Implement/Test and it would never
+            # finish the CR pass.
+            Logger.info("Review requested changes on #{issue.identifier}; dispatching Resolve Review: #{reason}")
+            dispatch_review(issue, metadata, plan, reason)
 
-          {:blocked, reason} ->
-            # Tester BLOCKED: verification is impossible (infra down, missing
-            # dependency) — a human has to unblock. Stop dispatching.
-            {:blocked, {:tester_blocked, reason}}
+          :ok ->
+            complete_tester_action(issue, metadata, plan)
         end
+    end
+  end
+
+  # The PR is externally clean (no conflicts, CI green, no requested changes) —
+  # the tester's verdict is the last gate before :done.
+  defp complete_tester_action(issue, metadata, plan) do
+    case tester_gate(issue, plan) do
+      :approved ->
+        :done
+
+      :needs_test ->
+        Logger.info("Plan code rows complete for #{issue.identifier}; dispatching the Test tester sub-agent")
+
+        metadata =
+          metadata
+          |> Map.put(:retask_phases, ["Test"])
+          |> Map.put(:model, Config.claude_test_model())
+
+        {:dispatch, metadata}
+
+      {:request_changes, reason} ->
+        # The tester found gaps but can't edit code. Reopen the done rows and
+        # dispatch an Implement row-closer; the Grader re-verifies on the next
+        # completion, snapping untouched rows back to done.
+        reopen_and_dispatch(issue, metadata, plan, reason)
+
+      {:blocked, reason} ->
+        # Tester BLOCKED: verification is impossible (infra down, missing
+        # dependency) — a human has to unblock. Stop dispatching.
+        {:blocked, {:tester_blocked, reason}}
     end
   end
 
@@ -1493,6 +1505,10 @@ defmodule SymphonyElixir.Orchestrator do
         end
       end
 
+      # Sticky: `completed` issues are re-assessed every poll, which for a
+      # blocked issue meant re-blocking — and re-posting the needs-human
+      # comment — every ~2.5 minutes (observed on GEA-4478).
+      state = %{state | blocked: MapSet.put(state.blocked, issue.id)}
       complete_issue(state, issue.id)
     end
   end

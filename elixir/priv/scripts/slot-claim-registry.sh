@@ -289,21 +289,54 @@ if [ "$BACKEND_HEALTHY" = "false" ]; then
   # repo-wide (GEA-4136) and its devenv process just errors on `cd frontend`.
   PROCS="postgres backend"
   [ "$POOL" = "platform" ] && PROCS="postgres backend frontend"
+  PLOG="$DIR/.devenv/processes.log"
+  LOG_OFFSET=$(wc -c < "$PLOG" 2>/dev/null | tr -d ' ' || echo 0)
   direnv exec . devenv up -d $PROCS 2>&1 | tail -3 || true
   echo "Waiting for backend on port $PHOENIX_PORT..."
   BACKEND_UP=false
+  BOOT_RETRIES=2
   for _ in $(seq 1 60); do
     if backend_healthy; then
       BACKEND_UP=true
       break
+    fi
+    # The backend intermittently dies at boot with a Mix.start ETS crash
+    # (before any app code loads) and process-compose does not restart it —
+    # a plain retry of `devenv up` boots clean. Detect the dead task early
+    # (only in log written since our own `devenv up`) and retry instead of
+    # burning the whole wait on a corpse.
+    if [ "$BOOT_RETRIES" -gt 0 ] && \
+       tail -c +"$((LOG_OFFSET + 1))" "$PLOG" 2>/dev/null | grep -q "devenv:processes:backend failed with error"; then
+      echo "Backend task died at boot; recycling devenv ($BOOT_RETRIES retries left)"
+      BOOT_RETRIES=$((BOOT_RETRIES - 1))
+      # `devenv up` only ATTACHES to a running supervisor and won't restart a
+      # dead task — a real retry needs down-then-up. And `down` alone can
+      # leave a dead supervisor's socket behind, which makes the next `up`
+      # attach to a corpse and die with a TUI error — kill the supervisor by
+      # cwd and remove the stale socket dir too.
+      direnv exec . devenv processes down 2>/dev/null || true
+      for PC_PID in $(pgrep -f process-compose); do
+        PC_CWD=$(lsof -a -p "$PC_PID" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)
+        [ "$PC_CWD" = "$DIR" ] && kill "$PC_PID" 2>/dev/null
+      done
+      SOCK=$(grep -o "process-compose server at [^ ]*pc\.sock" "$PLOG" 2>/dev/null | tail -1 | awk '{print $NF}')
+      [ -n "$SOCK" ] && rm -rf "$(dirname "$SOCK")"
+      sleep 2
+      LOG_OFFSET=$(wc -c < "$PLOG" 2>/dev/null | tr -d ' ' || echo 0)
+      direnv exec . devenv up -d $PROCS 2>&1 | tail -1 || true
     fi
     sleep 3
   done
   if [ "$BACKEND_UP" = "true" ]; then
     echo "Backend ready on port $PHOENIX_PORT"
   else
-    echo "WARNING: backend not answering on port $PHOENIX_PORT after 180s; slot is claimed but services may be down."
-    echo "The agent will need to recover — see the repo's CLAUDE.md for tooling."
+    # A dead slot is not a claimable slot: handing it to a worker just burns
+    # turns and ends in a tester BLOCKED verdict (guardrails forbid workers
+    # from starting devenv). Release the claim and back off — 75 makes the
+    # orchestrator retry the dispatch later, likely on a different slot.
+    echo "ERROR: backend not answering on port $PHOENIX_PORT after 180s; releasing slot and backing off."
+    rm -f "$WORKSPACE/.symphony_slot" "$LEASE"
+    exit 75
   fi
 else
   echo "Backend already healthy on port $PHOENIX_PORT, skipping start"

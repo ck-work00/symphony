@@ -1,5 +1,23 @@
 # Symphony TODO
 
+## Slot backends intermittently die at boot inside `Mix.start/0` (ETS badarg)
+`devenv up` backend sometimes crashes before any app code loads:
+`(MatchError) ... {Mix, :start, ...} {:EXIT, {:badarg, [{:ets, :lookup, [Mix.State, :shell] ...`
+via `Mix.Local.check_elixir_version_in_ebin` → `append_archives` (mix 1.18.4,
+nix store Elixir). Interactive `direnv exec . mix test`/`mix phx.server` in the
+same directory works; only the process-compose-supervised boot path fails, and
+intermittently — a plain retry of `devenv up` usually boots clean. When it
+fails, process-compose does NOT restart the backend task, so the slot stays
+dead until the next claim.
+
+Observed 2026-07-09/10 repeatedly (slots 4 and 6; blocked the GEA-4477/4478/4479
+testers). Mitigated: the claim script now detects the dead backend task in the
+fresh portion of `.devenv/processes.log` and retries `devenv up` (2 attempts)
+inside its wait loop. Root cause still unknown — suspects: the shared
+`~/.mix/archives` (hex-2.2.2-otp-27) being version-checked concurrently, or an
+env difference in the process-compose wrapper. Diagnose with the wrapper script
+from the process-compose YAML run standalone under load.
+
 ## `:paste_not_visible` crash storm pinned one issue's dispatches for hours
 Observed 2026-07-09, 19:19–20:53Z: every GEA-4394 Test dispatch (25+ in a row) crashed
 with `:paste_not_visible` from `TmuxCLI.paste_until_visible/4` (~3.5 min per attempt,

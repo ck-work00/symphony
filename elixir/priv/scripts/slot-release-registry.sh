@@ -47,23 +47,12 @@ if [ "$DIR" != "$EXPECTED_DIR" ]; then
 fi
 DIR="$EXPECTED_DIR"
 
-case "$REPO" in
-  gf_platform)    ELIGIBLE="${SYMPHONY_PLATFORM_SLOTS:-}" ;;
-  gf_procurement) ELIGIBLE="${SYMPHONY_PROCUREMENT_SLOTS:-}" ;;
-  *)              ELIGIBLE="" ;;
-esac
-
-if [ -n "$ELIGIBLE" ]; then
-  slot_eligible=false
-  for n in $ELIGIBLE; do
-    [ "$n" = "$SLOT_NUM" ] && slot_eligible=true && break
-  done
-  if [ "$slot_eligible" != "true" ]; then
-    echo "ERROR: slot $SLOT_NAME is not Symphony-eligible ($REPO: $ELIGIBLE) — refusing to clean"
-    exit 1
-  fi
-else
-  echo "WARNING: Symphony-eligible slot set for $REPO is unset; proceeding on the canonical-path check alone"
+# Eligibility mirrors slot-claim-registry.sh discovery (no allowlist,
+# 2026-07-14): any provisioned slot (has .envrc) is symphony-operable. The
+# canonical-path check above already prevents cleaning arbitrary directories.
+if [ ! -f "$DIR/.envrc" ]; then
+  echo "ERROR: $SLOT_NAME has no .envrc — not a provisioned slot; refusing to clean"
+  exit 1
 fi
 
 echo "Releasing symphony slot $SLOT_NAME..."

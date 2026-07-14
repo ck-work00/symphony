@@ -37,6 +37,12 @@ agent:
   max_concurrent_agents: 5
   max_turns: 20
 
+# The orchestrator stall watchdog reads codex.stall_timeout_ms regardless of
+# backend; its 300s default kills runs whose before_run hook is still
+# provisioning (hooks may take up to 15 min). Keep this >= hooks.timeout_ms.
+codex:
+  stall_timeout_ms: 900000
+
 claude:
   command: claude
   dangerously_skip_permissions: true

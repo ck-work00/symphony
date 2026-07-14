@@ -52,15 +52,20 @@ if [ ! -d "$REGISTRY" ]; then
   exit 1
 fi
 
-if [ "$POOL" = "platform" ]; then
-  ELIGIBLE_SLOTS="${SYMPHONY_PLATFORM_SLOTS:-}"
-else
-  ELIGIBLE_SLOTS="${SYMPHONY_PROCUREMENT_SLOTS:-}"
-fi
+# Eligible = every provisioned slot (has .envrc), discovered at claim time.
+# No hardcoded allowlist (decided 2026-07-14): capacity grows by provisioning
+# a slot, not by editing env. Leases (noclobber) and the dirty-tree guard in
+# the claim loop keep interactive sessions' slots and work safe.
+ELIGIBLE_SLOTS=""
+for D in "$GEARFLOW_WORKSPACE/local-dev/${REPO_PREFIX}-slot"*/; do
+  [ -f "${D}.envrc" ] || continue
+  N=$(basename "$D"); N="${N##*slot}"
+  ELIGIBLE_SLOTS="$ELIGIBLE_SLOTS $N"
+done
+ELIGIBLE_SLOTS=$(echo "$ELIGIBLE_SLOTS" | tr ' ' '\n' | sort -n | xargs)
 
 if [ -z "$ELIGIBLE_SLOTS" ]; then
-  echo "ERROR: no Symphony-eligible $POOL slots configured."
-  echo "Set SYMPHONY_$(echo "$POOL" | tr '[:lower:]' '[:upper:]')_SLOTS (space-separated slot numbers) in Symphony's environment or the before_run hook."
+  echo "ERROR: no provisioned $POOL slots found under $GEARFLOW_WORKSPACE/local-dev."
   exit 1
 fi
 
@@ -143,6 +148,13 @@ for SLOT_NUM in $ELIGIBLE_SLOTS; do
   DIR="$(slot_dir "$SLOT_NUM")"
   if [ ! -d "$DIR" ]; then
     echo "WARN: designated slot ${REPO_PREFIX}-slot${SLOT_NUM} does not exist at $DIR, skipping"
+    continue
+  fi
+  # Modified TRACKED files with no lease = someone's unshipped work (or a
+  # crashed run's leftovers) — never reset it out of existence. Untracked
+  # files (.env etc.) don't count; git clean handles those with -e guards.
+  if [ -n "$(git -C "$DIR" status --porcelain --untracked-files=no 2>/dev/null | head -c1)" ]; then
+    echo "Skipping ${REPO_PREFIX}-slot${SLOT_NUM}: uncommitted tracked changes and no lease"
     continue
   fi
   LEASE="$(lease_file "$SLOT_NUM")"

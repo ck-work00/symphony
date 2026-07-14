@@ -1,5 +1,19 @@
 # Symphony TODO
 
+## Stall watchdog counts before_run provisioning as agent inactivity
+The orchestrator's stall reconciler (`reconcile_stalled_running_issues`) starts
+its clock at dispatch and reads `codex.stall_timeout_ms` (300s default)
+regardless of agent backend — `claude.stall_timeout_ms` never reaches it. A
+`before_run` hook that legitimately provisions for >300s (recompile after main
+moves) got stall-killed mid-wait with `session_id=n/a`, and the kill tore down
+the devenv the hook's health gate was waiting on, so every retry failed the
+same way (observed 2026-07-14, ~3h of looped dispatches on GEA-4619/4625).
+
+Real fix, either/both: (a) start the stall clock only once the agent session
+exists; (b) map the active backend's `stall_timeout_ms` onto the watchdog.
+Mitigation in place: `codex.stall_timeout_ms: 900000` in WORKFLOW*.md, matched
+to `hooks.timeout_ms` — keep them in sync until fixed.
+
 ## Slot backends intermittently die at boot inside `Mix.start/0` (ETS badarg)
 `devenv up` backend sometimes crashes before any app code loads:
 `(MatchError) ... {Mix, :start, ...} {:EXIT, {:badarg, [{:ets, :lookup, [Mix.State, :shell] ...`

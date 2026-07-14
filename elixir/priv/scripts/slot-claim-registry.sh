@@ -254,9 +254,6 @@ fi
 
 direnv exec . mix deps.get --quiet 2>&1 | tail -5 || true
 
-# Migrations and DB recovery are the agent's job — not slot-claim's. A failing
-# migration here would block the run entirely; the agent can diagnose DB state.
-
 # Slot contract for the agent. BASE_BRANCH is always main here (we reset the
 # slot to origin/main above); the orchestrator reads it to know what to diff the
 # run against, so record it explicitly rather than letting it guess.
@@ -292,6 +289,15 @@ if [ "$BACKEND_HEALTHY" = "false" ]; then
   PLOG="$DIR/.devenv/processes.log"
   LOG_OFFSET=$(wc -c < "$PLOG" 2>/dev/null | tr -d ' ' || echo 0)
   direnv exec . devenv up -d $PROCS 2>&1 | tail -3 || true
+  # Migrate before the health gate: dev-mode CheckRepoStatus 500s every request
+  # while migrations are pending, but no agent exists yet to run them — an
+  # unmigrated slot would loop "no capacity" forever (deadlock hit 2026-07-14).
+  # Non-fatal: a genuinely broken migration still surfaces at the gate below.
+  for _ in $(seq 1 10); do
+    direnv exec . pg_isready -q -h localhost -p "$POSTGRES_PORT" 2>/dev/null && break
+    sleep 3
+  done
+  direnv exec . mix ecto.migrate 2>&1 | tail -5 || true
   echo "Waiting for backend on port $PHOENIX_PORT..."
   BACKEND_UP=false
   BOOT_RETRIES=2

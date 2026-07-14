@@ -300,8 +300,11 @@ if [ "$BACKEND_HEALTHY" = "false" ]; then
   direnv exec . mix ecto.migrate 2>&1 | tail -5 || true
   echo "Waiting for backend on port $PHOENIX_PORT..."
   BACKEND_UP=false
-  BOOT_RETRIES=2
-  for _ in $(seq 1 60); do
+  BOOT_RETRIES=4
+  # 450s: a branch switch after main moves can force a near-full recompile
+  # (~4 min for 700 files) before the endpoint can answer — 180s timed out
+  # on healthy slots (2026-07-14). Needs hooks.timeout_ms above it.
+  for _ in $(seq 1 150); do
     if backend_healthy; then
       BACKEND_UP=true
       break
@@ -340,7 +343,7 @@ if [ "$BACKEND_HEALTHY" = "false" ]; then
     # turns and ends in a tester BLOCKED verdict (guardrails forbid workers
     # from starting devenv). Release the claim and back off — 75 makes the
     # orchestrator retry the dispatch later, likely on a different slot.
-    echo "ERROR: backend not answering on port $PHOENIX_PORT after 180s; releasing slot and backing off."
+    echo "ERROR: backend not answering on port $PHOENIX_PORT after 450s; releasing slot and backing off."
     rm -f "$WORKSPACE/.symphony_slot" "$LEASE"
     exit 75
   fi

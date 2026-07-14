@@ -25,7 +25,7 @@ workspace:
   root: ~/code/symphony-workspaces
 
 hooks:
-  timeout_ms: 300000
+  timeout_ms: 900000
   before_run: |
     BRANCH="${SYMPHONY_BRANCH_NAME:-$(echo "$(basename "$PWD")" | tr '[:upper:]' '[:lower:]')}"
     "${SYMPHONY_SCRIPTS}slot-claim.sh" "${SYMPHONY_REPO:-procurement}" "$BRANCH" "$PWD"

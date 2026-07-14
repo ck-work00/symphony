@@ -11,8 +11,14 @@ same way (observed 2026-07-14, ~3h of looped dispatches on GEA-4619/4625).
 
 Real fix, either/both: (a) start the stall clock only once the agent session
 exists; (b) map the active backend's `stall_timeout_ms` onto the watchdog.
-Mitigation in place: `codex.stall_timeout_ms: 900000` in WORKFLOW*.md, matched
-to `hooks.timeout_ms` — keep them in sync until fixed.
+Mitigation in place: `codex.stall_timeout_ms: 1800000` in WORKFLOW*.md — must
+stay >= hooks.timeout_ms until fixed.
+
+Related: the phase-stuck timer (hardcoded `timeout_ms * 2`) killed an ACTIVELY
+WORKING agent 31 min into its Test phase (GEA-4621, 2026-07-14 16:35 — pane
+showed live token flow). A long test suite naturally holds one phase for
+30-60 min. The phase timer should not fire while the session shows recent
+activity; long-but-active phases are normal, not stuck.
 
 ## Slot backends intermittently die at boot inside `Mix.start/0` (ETS badarg)
 `devenv up` backend sometimes crashes before any app code loads:

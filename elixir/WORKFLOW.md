@@ -41,7 +41,7 @@ agent:
 # backend; its 300s default kills runs whose before_run hook is still
 # provisioning (hooks may take up to 15 min). Keep this >= hooks.timeout_ms.
 codex:
-  stall_timeout_ms: 900000
+  stall_timeout_ms: 1800000
 
 claude:
   command: claude

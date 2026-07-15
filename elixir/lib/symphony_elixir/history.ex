@@ -58,12 +58,19 @@ defmodule SymphonyElixir.History do
     |> Repo.one()
   end
 
-  @doc "Count of finished runs for an issue — the no-progress breaker's cycle gate."
+  @doc """
+  Count of finished WORKER runs for an issue — the no-progress breaker's cycle
+  gate. Excludes `no_capacity`/`orphaned` rows: no agent ran, so nothing could
+  have progressed, and counting them let a slot-starved retry loop append the
+  same fingerprint three times and self-trip the breaker (GEA-4623,
+  2026-07-15 20:14Z).
+  """
   @spec finished_run_count(String.t()) :: non_neg_integer()
   def finished_run_count(issue_identifier) when is_binary(issue_identifier) do
     Run
     |> where([r], r.issue_identifier == ^issue_identifier)
     |> where([r], not is_nil(r.finished_at))
+    |> where([r], is_nil(r.outcome) or r.outcome not in ["no_capacity", "orphaned"])
     |> select([r], count(r.id))
     |> Repo.one()
   end

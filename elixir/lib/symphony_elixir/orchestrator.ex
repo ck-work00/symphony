@@ -1171,7 +1171,7 @@ defmodule SymphonyElixir.Orchestrator do
   # instead keep a short history and trip when the same state recurs N times.
   # Only append when a run has FINISHED since the last append, so no-capacity
   # retries and poll cycles don't inflate the count.
-  defp no_progress_check(issue, {:dispatch, _} = result) do
+  defp no_progress_check(issue, {:dispatch, dispatch_metadata} = result) do
     identifier = Map.get(issue, :identifier)
     limit = Config.plan_cycle_repeat_limit()
 
@@ -1185,7 +1185,8 @@ defmodule SymphonyElixir.Orchestrator do
         last_seen = meta["cycle_run_count"] || 0
 
         if finished > last_seen do
-          fingerprint = plan_cycle_fingerprint(plan, identifier)
+          fingerprint =
+            plan_cycle_fingerprint(plan, identifier, dispatch_metadata[:existing_pr_url])
           history = Enum.take([fingerprint | meta["cycle_history"] || []], 4 * limit)
           repeats = Enum.count(history, &(&1 == fingerprint))
           tripped? = repeats >= limit
@@ -1223,7 +1224,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   # Human-readable on purpose: it's stored in plan metadata and quoted in the
   # needs_human message, where a hash would say nothing.
-  defp plan_cycle_fingerprint(plan, identifier) do
+  defp plan_cycle_fingerprint(plan, identifier, pr_url) do
     rows =
       plan
       |> SymphonyElixir.Planning.Plan.rows()
@@ -1237,8 +1238,31 @@ defmodule SymphonyElixir.Orchestrator do
         nil -> "untested"
       end
 
-    rows <> " | " <> verdict
+    rows <> " | " <> verdict <> " | head=" <> pr_head_sha(pr_url)
   end
+
+  # The PR head belongs in the fingerprint: post-approval phases (Resolve
+  # Review, Fix CI) change no row states and add no tester verdict — new
+  # commits on the branch are the only progress signal, and without it the
+  # breaker reads a converging CR-triage tail as stuck (false trip on
+  # GEA-4662, 2026-07-15). "?" on any gh failure: an unreadable head must not
+  # make every cycle look distinct, and "?" == "?" keeps the breaker armed.
+  defp pr_head_sha(pr_url) when is_binary(pr_url) do
+    case pr_ref(pr_url) do
+      {repo, number} ->
+        case gh_cmd(["pr", "view", number, "--repo", repo, "--json", "headRefOid", "-q", ".headRefOid"]) do
+          {output, 0} -> output |> String.trim() |> String.slice(0, 12)
+          _ -> "?"
+        end
+
+      :error ->
+        "?"
+    end
+  rescue
+    _ -> "?"
+  end
+
+  defp pr_head_sha(_), do: "?"
 
   defp verdict_reason_suffix(%{reason: reason}) when is_binary(reason) and reason != "",
     do: ": #{reason}"

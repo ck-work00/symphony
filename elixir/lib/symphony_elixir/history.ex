@@ -23,9 +23,9 @@ defmodule SymphonyElixir.History do
   machine-readable source of truth the gate reads; the Linear report is for
   humans. Best-effort: a bad verdict string is dropped rather than raising.
   """
-  @spec record_tester_verdict(String.t(), String.t(), String.t() | nil) ::
+  @spec record_tester_verdict(String.t(), String.t(), String.t() | nil, String.t() | nil) ::
           {:ok, TesterVerdict.t()} | {:error, Ecto.Changeset.t()}
-  def record_tester_verdict(issue_identifier, verdict, commit_sha \\ nil) do
+  def record_tester_verdict(issue_identifier, verdict, commit_sha \\ nil, reason \\ nil) do
     # The SYMPHONY_VERDICT marker is re-extracted every time the session JSONL
     # is re-read, so an unguarded insert piles up duplicates (observed: 139
     # identical BLOCKED rows on one issue). Same verdict+sha as the latest row
@@ -35,10 +35,37 @@ defmodule SymphonyElixir.History do
         {:ok, existing}
 
       _ ->
-        %{issue_identifier: issue_identifier, verdict: verdict, commit_sha: commit_sha}
+        %{issue_identifier: issue_identifier, verdict: verdict, commit_sha: commit_sha, reason: reason}
         |> TesterVerdict.create_changeset()
         |> Repo.insert()
     end
+  end
+
+  @doc """
+  Count of runs dispatched for an issue since UTC midnight, excluding rows that
+  never became a worker (`no_capacity` claim failures and `orphaned` sweep
+  closures). The daily dispatch budget reads this.
+  """
+  @spec dispatches_today(String.t()) :: non_neg_integer()
+  def dispatches_today(issue_identifier) when is_binary(issue_identifier) do
+    midnight = DateTime.new!(Date.utc_today(), ~T[00:00:00], "Etc/UTC")
+
+    Run
+    |> where([r], r.issue_identifier == ^issue_identifier)
+    |> where([r], r.started_at >= ^midnight)
+    |> where([r], is_nil(r.outcome) or r.outcome not in ["no_capacity", "orphaned"])
+    |> select([r], count(r.id))
+    |> Repo.one()
+  end
+
+  @doc "Count of finished runs for an issue — the no-progress breaker's cycle gate."
+  @spec finished_run_count(String.t()) :: non_neg_integer()
+  def finished_run_count(issue_identifier) when is_binary(issue_identifier) do
+    Run
+    |> where([r], r.issue_identifier == ^issue_identifier)
+    |> where([r], not is_nil(r.finished_at))
+    |> select([r], count(r.id))
+    |> Repo.one()
   end
 
   @doc "The most recent tester verdict for an issue, or nil."
@@ -63,6 +90,26 @@ defmodule SymphonyElixir.History do
       nil -> {:error, :not_found}
       run -> record_completion(run, attrs)
     end
+  end
+
+  @doc """
+  Close every run row still open (`finished_at IS NULL`). Called once at
+  orchestrator startup: no run survives a restart (the startup reapers kill
+  their tmux sessions and slot leases), so any open row is a leftover from a
+  crash or kill and would make "active runs" queries lie forever.
+  """
+  @spec close_orphaned_runs() :: non_neg_integer()
+  def close_orphaned_runs do
+    now = DateTime.utc_now()
+
+    {count, _} =
+      Run
+      |> where([r], is_nil(r.finished_at))
+      |> Repo.update_all(
+        set: [finished_at: now, outcome: "orphaned", error_category: "orphaned", updated_at: now]
+      )
+
+    count
   end
 
   @doc """

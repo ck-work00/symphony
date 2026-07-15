@@ -8,9 +8,11 @@ defmodule SymphonyElixir.Claude.StreamParser do
   # Match "SYMPHONY_NEEDS_HELP: description" markers
   @symphony_needs_help_regex ~r/SYMPHONY_NEEDS_HELP:\s*(.+)/
 
-  # Match "SYMPHONY_VERDICT: APPROVE|REQUEST_CHANGES|BLOCKED [<commit-sha>]" markers —
-  # the tester's machine-readable verdict, optionally tagged with the tested head.
-  @symphony_verdict_regex ~r/SYMPHONY_VERDICT:\s*(APPROVE|REQUEST_CHANGES|BLOCKED)(?:\s+([0-9a-fA-F]{7,40}))?/
+  # Match "SYMPHONY_VERDICT: APPROVE|REQUEST_CHANGES|BLOCKED [<commit-sha>] [— reason]"
+  # markers — the tester's machine-readable verdict, optionally tagged with the
+  # tested head and a one-line reason (which rides into the next worker's prompt;
+  # without it each Implement pass re-guesses what the tester objected to).
+  @symphony_verdict_regex ~r/SYMPHONY_VERDICT:[ \t]*(APPROVE|REQUEST_CHANGES|BLOCKED)(?:[ \t]+([0-9a-fA-F]{7,40}))?(?:[ \t]*[—–-][ \t]*([^\n]+))?/u
 
   @doc """
   Parse a single JSON line from stdout. Returns {:ok, event_map} or {:error, reason}.
@@ -179,11 +181,19 @@ defmodule SymphonyElixir.Claude.StreamParser do
 
   defp detect_verdict(text) do
     case Regex.run(@symphony_verdict_regex, text) do
-      [_, verdict] -> {verdict, nil}
-      [_, verdict, ""] -> {verdict, nil}
-      [_, verdict, sha] -> {verdict, sha}
+      [_, verdict] -> {verdict, nil, nil}
+      [_, verdict, sha] -> {verdict, presence(sha), nil}
+      [_, verdict, sha, reason] -> {verdict, presence(sha), presence(reason, 500)}
       nil -> nil
     end
+  end
+
+  defp presence(value, max \\ nil)
+  defp presence("", _max), do: nil
+
+  defp presence(value, max) when is_binary(value) do
+    value = String.trim(value)
+    if value == "", do: nil, else: if(max, do: String.slice(value, 0, max), else: value)
   end
 
   defp extract_text_content(event) do

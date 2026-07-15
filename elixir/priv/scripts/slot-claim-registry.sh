@@ -291,9 +291,27 @@ CLAIM_COMPLETE=1
 # Never a bare `devenv up`: that would also launch the test-suite process.
 # Non-fatal — if bring-up fails the agent receives the slot with services
 # down and recovers.
+kill_slot_orphans() {
+  # We hold the lease and the backend is unhealthy, so any process-compose or
+  # beam still cwd'd in this slot is a leftover from a dead supervisor. An
+  # orphaned beam keeps the slot's epmd node name (and sometimes the port), so
+  # the next boot dies with "name seems to be in use" — sweep before booting.
+  local PID CWD
+  for PID in $(pgrep -f 'process-compose|beam.smp'); do
+    CWD=$(lsof -a -p "$PID" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)
+    if [ "$CWD" = "$DIR" ]; then
+      echo "Killing orphaned process $PID in slot"
+      kill "$PID" 2>/dev/null || true
+      sleep 2
+      kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null || true
+    fi
+  done
+}
+
 if [ "$BACKEND_HEALTHY" = "false" ]; then
   direnv exec . devenv processes down 2>/dev/null || true
   sleep 2
+  kill_slot_orphans
   # No `frontend` process for procurement: the React frontend/ tree was deleted
   # repo-wide (GEA-4136) and its devenv process just errors on `cd frontend`.
   PROCS="postgres backend"
@@ -321,13 +339,23 @@ if [ "$BACKEND_HEALTHY" = "false" ]; then
       BACKEND_UP=true
       break
     fi
+    FRESH_LOG=$(tail -c +"$((LOG_OFFSET + 1))" "$PLOG" 2>/dev/null || true)
+    # A dep-resolution failure at boot means the slot's Mix env is broken
+    # (e.g. Hex missing from MIX_ARCHIVES) — recycling can't fix it, and the
+    # 450s gate would poll a corpse. Fail fast instead (2026-07-14).
+    if echo "$FRESH_LOG" | grep -q "Could not find an SCM for dependency"; then
+      echo "ERROR: backend boot cannot resolve deps (Hex missing from MIX_ARCHIVES?); releasing slot."
+      rm -f "$WORKSPACE/.symphony_slot" "$LEASE"
+      exit 75
+    fi
     # The backend intermittently dies at boot with a Mix.start ETS crash
     # (before any app code loads) and process-compose does not restart it —
-    # a plain retry of `devenv up` boots clean. Detect the dead task early
-    # (only in log written since our own `devenv up`) and retry instead of
-    # burning the whole wait on a corpse.
+    # a plain retry of `devenv up` boots clean. A node-name collision from a
+    # zombie beam is also cured by a recycle (the orphan sweep runs in the
+    # recycle path). Detect the dead task early (only in log written since
+    # our own `devenv up`) and retry instead of burning the whole wait.
     if [ "$BOOT_RETRIES" -gt 0 ] && \
-       tail -c +"$((LOG_OFFSET + 1))" "$PLOG" 2>/dev/null | grep -q "devenv:processes:backend failed with error"; then
+       echo "$FRESH_LOG" | grep -qE "devenv:processes:backend failed with error|seems to be in use by another Erlang node"; then
       echo "Backend task died at boot; recycling devenv ($BOOT_RETRIES retries left)"
       BOOT_RETRIES=$((BOOT_RETRIES - 1))
       # `devenv up` only ATTACHES to a running supervisor and won't restart a
@@ -336,10 +364,7 @@ if [ "$BACKEND_HEALTHY" = "false" ]; then
       # attach to a corpse and die with a TUI error — kill the supervisor by
       # cwd and remove the stale socket dir too.
       direnv exec . devenv processes down 2>/dev/null || true
-      for PC_PID in $(pgrep -f process-compose); do
-        PC_CWD=$(lsof -a -p "$PC_PID" -d cwd -Fn 2>/dev/null | grep '^n' | cut -c2-)
-        [ "$PC_CWD" = "$DIR" ] && kill "$PC_PID" 2>/dev/null
-      done
+      kill_slot_orphans
       SOCK=$(grep -o "process-compose server at [^ ]*pc\.sock" "$PLOG" 2>/dev/null | tail -1 | awk '{print $NF}')
       [ -n "$SOCK" ] && rm -rf "$(dirname "$SOCK")"
       sleep 2

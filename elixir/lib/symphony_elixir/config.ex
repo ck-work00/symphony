@@ -29,6 +29,10 @@ defmodule SymphonyElixir.Config do
   @default_agent_max_turns 20
   @default_max_retry_backoff_ms 300_000
   @default_max_failure_retries 3
+  # Churn guards (2026-07-15): a converging issue needs well under a dozen
+  # dispatches a day; GEA-4621 burned 42 in one day without progress.
+  @default_max_dispatches_per_issue_per_day 12
+  @default_plan_cycle_repeat_limit 3
   @default_agent_backend "codex"
   @default_codex_command "codex app-server"
   # Claude Code defaults
@@ -139,6 +143,14 @@ defmodule SymphonyElixir.Config do
                                  max_failure_retries: [
                                    type: :pos_integer,
                                    default: @default_max_failure_retries
+                                 ],
+                                 max_dispatches_per_issue_per_day: [
+                                   type: :pos_integer,
+                                   default: @default_max_dispatches_per_issue_per_day
+                                 ],
+                                 plan_cycle_repeat_limit: [
+                                   type: :pos_integer,
+                                   default: @default_plan_cycle_repeat_limit
                                  ],
                                  max_concurrent_agents_by_state: [
                                    type: {:map, :string, :pos_integer},
@@ -468,6 +480,16 @@ defmodule SymphonyElixir.Config do
   @spec agent_max_turns() :: pos_integer()
   def agent_max_turns do
     get_in(validated_workflow_options(), [:agent, :max_turns])
+  end
+
+  @spec max_dispatches_per_issue_per_day() :: pos_integer()
+  def max_dispatches_per_issue_per_day do
+    get_in(validated_workflow_options(), [:agent, :max_dispatches_per_issue_per_day])
+  end
+
+  @spec plan_cycle_repeat_limit() :: pos_integer()
+  def plan_cycle_repeat_limit do
+    get_in(validated_workflow_options(), [:agent, :plan_cycle_repeat_limit])
   end
 
   @spec max_concurrent_agents_for_state(term()) :: pos_integer()

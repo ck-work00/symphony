@@ -18,6 +18,7 @@ defmodule SymphonyElixir.History.TesterVerdict do
     field(:issue_identifier, :string)
     field(:verdict, :string)
     field(:commit_sha, :string)
+    field(:reason, :string)
 
     timestamps(type: :utc_datetime_usec)
   end
@@ -25,7 +26,7 @@ defmodule SymphonyElixir.History.TesterVerdict do
   @spec create_changeset(map()) :: Ecto.Changeset.t()
   def create_changeset(attrs) do
     %__MODULE__{}
-    |> cast(attrs, [:issue_identifier, :verdict, :commit_sha])
+    |> cast(attrs, [:issue_identifier, :verdict, :commit_sha, :reason])
     |> validate_required([:issue_identifier, :verdict])
     |> validate_inclusion(:verdict, @verdicts)
   end

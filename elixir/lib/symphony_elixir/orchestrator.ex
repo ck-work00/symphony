@@ -7,7 +7,7 @@ defmodule SymphonyElixir.Orchestrator do
   require Logger
   import Bitwise, only: [<<<: 2]
 
-  alias SymphonyElixir.{Config, Evaluator, History, Notifier, StatusDashboard, Suitability, Tracker, Workspace}
+  alias SymphonyElixir.{Config, Evaluator, History, Notifier, Planning, StatusDashboard, Suitability, Tracker, Workspace}
   alias SymphonyElixir.Claude.StreamParser
   alias SymphonyElixir.Linear.Issue
 
@@ -80,9 +80,22 @@ defmodule SymphonyElixir.Orchestrator do
     }
 
     run_terminal_workspace_cleanup()
+    close_orphaned_history_runs()
     :ok = schedule_tick(0)
 
     {:ok, state}
+  end
+
+  # No run survives a restart, so open rows are crash leftovers — close them
+  # or they pollute "active runs" queries forever (101 had piled up by 2026-07-14).
+  defp close_orphaned_history_runs do
+    case History.close_orphaned_runs() do
+      0 -> :ok
+      count -> Logger.info("Closed #{count} orphaned open run row(s) from prior crashes/restarts")
+    end
+  rescue
+    error ->
+      Logger.warning("Failed to close orphaned run rows: #{Exception.message(error)}")
   end
 
   # Load recent finished runs from SQLite so the dashboard survives restarts.
@@ -155,6 +168,19 @@ defmodule SymphonyElixir.Orchestrator do
         Logger.info(
           "No pool slot for issue_id=#{issue_id} identifier=#{running_entry[:identifier]}; backing off"
         )
+
+        # Close the run row opened at dispatch — skipping history here left
+        # these 0-turn rows open forever (101 piled up by 2026-07-14). A
+        # distinct outcome keeps them out of failure stats.
+        with run_id when is_binary(run_id) <- Map.get(running_entry, :history_run_id),
+             {:error, reason} <-
+               History.record_completion(run_id, %{
+                 finished_at: DateTime.utc_now(),
+                 outcome: "no_capacity",
+                 error_category: "no_capacity"
+               }) do
+          Logger.warning("Failed to close no_capacity run row #{run_id}: #{inspect(reason)}")
+        end
 
         state =
           schedule_issue_retry(state, issue_id, 1, %{
@@ -269,9 +295,9 @@ defmodule SymphonyElixir.Orchestrator do
         # verdict can't be lost to wording variance or a report posted to GitHub.
         if raw_event do
           case StreamParser.extract_verdict(raw_event) do
-            {verdict, sha} ->
+            {verdict, sha, reason} ->
               if identifier = Map.get(running_entry, :identifier),
-                do: History.record_tester_verdict(identifier, verdict, sha)
+                do: History.record_tester_verdict(identifier, verdict, sha, reason)
 
             _ ->
               :ok
@@ -1079,7 +1105,31 @@ defmodule SymphonyElixir.Orchestrator do
   #   * Plan generation failed → block the issue and notify a human.
   #
   # Returns {:dispatch, metadata} | :done | {:blocked, reason}.
+  #
+  # Two guards wrap the decision (GEA-4625/4621 churn, 2026-07-15: 50 and 42
+  # dispatches against already-green PRs). Both escalate to a human via the
+  # ordinary {:blocked, _} path — escalation IS the amendment path; the plan
+  # itself is never revised autonomously.
+  #
+  #   * Daily dispatch budget: hard cap on worker dispatches per issue per
+  #     UTC day, whatever the phase mix. Makes a 374-run issue impossible.
+  #   * No-progress breaker: if the same (row states + tester verdict)
+  #     fingerprint keeps coming back across finished runs, the plan/grader/
+  #     tester standoff will never converge — stop dispatching.
   defp plan_action(issue, metadata) do
+    case dispatch_budget_check(issue) do
+      :ok ->
+        case plan_action_decision(issue, metadata) do
+          {:dispatch, _} = result -> no_progress_check(issue, result)
+          other -> other
+        end
+
+      {:blocked, _} = blocked ->
+        blocked
+    end
+  end
+
+  defp plan_action_decision(issue, metadata) do
     case SymphonyElixir.Planning.Workflow.assess(issue, pr_url: metadata[:existing_pr_url]) do
       {:ok, {:has_open_rows, plan, rows}} ->
         dispatch_implement(issue, metadata, plan, rows, "#{length(rows)} open rows")
@@ -1094,6 +1144,106 @@ defmodule SymphonyElixir.Orchestrator do
     error ->
       {:blocked, {:plan_action_crashed, Exception.message(error)}}
   end
+
+  defp dispatch_budget_check(issue) do
+    limit = Config.max_dispatches_per_issue_per_day()
+    used = History.dispatches_today(Map.get(issue, :identifier))
+
+    if used >= limit do
+      {:blocked,
+       {:dispatch_budget_exhausted,
+        "#{used} dispatches since 00:00 UTC (limit #{limit}) — a converging issue " <>
+          "finishes in far fewer; something is looping. Review the plan and recent " <>
+          "run outcomes, then re-activate the issue to resume."}}
+    else
+      :ok
+    end
+  rescue
+    # The budget guard must never take down dispatch itself.
+    error ->
+      Logger.warning("dispatch_budget_check failed for #{issue_context(issue)}: #{Exception.message(error)}")
+      :ok
+  end
+
+  # Cycle fingerprint = plan row states + latest tester verdict. The GEA-4625
+  # standoff alternates between a small set of states (rows reopen → implement
+  # → grader re-rejects → rows reopen …), so consecutive-equality misses it;
+  # instead keep a short history and trip when the same state recurs N times.
+  # Only append when a run has FINISHED since the last append, so no-capacity
+  # retries and poll cycles don't inflate the count.
+  defp no_progress_check(issue, {:dispatch, _} = result) do
+    identifier = Map.get(issue, :identifier)
+    limit = Config.plan_cycle_repeat_limit()
+
+    case Planning.get_plan_by_issue(identifier) do
+      nil ->
+        result
+
+      plan ->
+        finished = History.finished_run_count(identifier)
+        meta = plan.metadata || %{}
+        last_seen = meta["cycle_run_count"] || 0
+
+        if finished > last_seen do
+          fingerprint = plan_cycle_fingerprint(plan, identifier)
+          history = Enum.take([fingerprint | meta["cycle_history"] || []], 4 * limit)
+          repeats = Enum.count(history, &(&1 == fingerprint))
+          tripped? = repeats >= limit
+
+          # Tripping resets the history: a human re-activating the issue gets a
+          # fresh breaker budget instead of an instant re-trip.
+          {:ok, _} =
+            Planning.update_plan(plan, %{
+              metadata:
+                Map.merge(meta, %{
+                  "cycle_history" => if(tripped?, do: [], else: history),
+                  "cycle_run_count" => finished
+                })
+            })
+
+          if tripped? do
+            {:blocked,
+             {:no_progress,
+              "the dispatch cycle has returned to the same state #{repeats}× " <>
+                "(limit #{limit}) — plan, grader, and tester are not converging. " <>
+                "State: #{fingerprint}"}}
+          else
+            result
+          end
+        else
+          result
+        end
+    end
+  rescue
+    # The breaker must never take down dispatch itself.
+    error ->
+      Logger.warning("no_progress_check failed for #{issue_context(issue)}: #{Exception.message(error)}")
+      result
+  end
+
+  # Human-readable on purpose: it's stored in plan metadata and quoted in the
+  # needs_human message, where a hash would say nothing.
+  defp plan_cycle_fingerprint(plan, identifier) do
+    rows =
+      plan
+      |> SymphonyElixir.Planning.Plan.rows()
+      |> Enum.map(&"#{&1["id"]}=#{&1["state"]}")
+      |> Enum.sort()
+      |> Enum.join(",")
+
+    verdict =
+      case History.latest_tester_verdict(identifier) do
+        %{verdict: v, commit_sha: sha} -> "#{v}@#{sha || "?"}"
+        nil -> "untested"
+      end
+
+    rows <> " | " <> verdict
+  end
+
+  defp verdict_reason_suffix(%{reason: reason}) when is_binary(reason) and reason != "",
+    do: ": #{reason}"
+
+  defp verdict_reason_suffix(_), do: ""
 
   # The plan's code rows are all done. A fresh @agent comment (the user
   # retasking after completion) takes priority over the tester gate: reopen the
@@ -1438,10 +1588,13 @@ defmodule SymphonyElixir.Orchestrator do
             # BLOCKED means the tester couldn't verify for reasons no Implement
             # worker can fix (infra down, missing dependency). Reopening rows
             # here just grinds no-progress Implement dispatches forever.
-            {:blocked, "tester BLOCKED at #{DateTime.to_iso8601(verdict.inserted_at)}"}
+            {:blocked, "tester BLOCKED at #{DateTime.to_iso8601(verdict.inserted_at)}#{verdict_reason_suffix(verdict)}"}
 
           true ->
-            {:request_changes, "tester #{verdict.verdict} at #{DateTime.to_iso8601(verdict.inserted_at)}"}
+            # The reason rides into the reopened rows' rationale and from there
+            # into the next worker's prompt — without it each Implement pass
+            # re-guesses what the tester objected to (the GEA-4625 churn).
+            {:request_changes, "tester #{verdict.verdict} at #{DateTime.to_iso8601(verdict.inserted_at)}#{verdict_reason_suffix(verdict)}"}
         end
 
       nil ->

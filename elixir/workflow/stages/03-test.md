@@ -192,11 +192,19 @@ machine; the Linear report is for humans):
 
 ```
 SYMPHONY_VERDICT: APPROVE <pr-head-sha>
+SYMPHONY_VERDICT: REQUEST_CHANGES <pr-head-sha> — <one-line reason>
 ```
 
 Use `APPROVE`, `REQUEST_CHANGES`, or `BLOCKED` to match your `Recommendation:`
 line exactly, and append the PR head SHA you tested (`git rev-parse HEAD`). Emit
 this on **every** run, including re-tests.
+
+For `REQUEST_CHANGES` and `BLOCKED`, append ` — ` and a **single-line** reason
+naming the concrete gap (file/behavior), e.g.
+`REQUEST_CHANGES abc1234 — create/update in Jobs context still lack the admin gate`.
+The orchestrator stores it and feeds it into the next worker's prompt — without
+it the next Implement pass has to re-guess what you objected to. Keep it on one
+line; everything after a newline is dropped.
 
 ### Step 7: Stop
 

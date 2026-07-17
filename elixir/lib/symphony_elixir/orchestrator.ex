@@ -2451,11 +2451,15 @@ defmodule SymphonyElixir.Orchestrator do
     # Clear this issue's run history so the forced re-dispatch starts clean
     History.delete_all_runs(issue.identifier)
 
-    # Clear in-memory tracking so should_dispatch_issue? passes
+    # Clear in-memory tracking so should_dispatch_issue? passes. Includes the
+    # sticky `blocked` set: a human forcing a dispatch IS the unblock — without
+    # this, the poller skips the issue again after the forced run completes and
+    # every subsequent phase needs another manual force (or a restart).
     state = %{
       state
       | completed: MapSet.delete(state.completed, issue.id),
-        claimed: MapSet.delete(state.claimed, issue.id)
+        claimed: MapSet.delete(state.claimed, issue.id),
+        blocked: MapSet.delete(state.blocked, issue.id)
     }
 
     state = dispatch_issue(state, issue)

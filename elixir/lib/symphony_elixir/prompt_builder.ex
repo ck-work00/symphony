@@ -111,6 +111,12 @@ defmodule SymphonyElixir.PromptBuilder do
     "  - #{label}: #{Enum.join(items, ", ")}"
   end
 
+  # Plan rows are JSON edited by humans as well as the planner; a bare string
+  # where a list belongs shouldn't crash the whole dispatch (observed
+  # 2026-07-17: hand-amended row with tests: "..." function-claused every
+  # retry until the row was rewritten).
+  defp format_list_line(label, item) when is_binary(item), do: format_list_line(label, [item])
+
   @doc """
   Builds a continuation prompt for turn N+.
   Uses staged _continuation.md template if available, otherwise falls back to default.

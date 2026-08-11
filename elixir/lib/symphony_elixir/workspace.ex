@@ -599,12 +599,13 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp issue_context(%{id: issue_id, identifier: identifier, labels: labels, branch_name: branch_name}) do
+  defp issue_context(%{id: issue_id, identifier: identifier, labels: labels, branch_name: branch_name} = issue) do
     %{
       issue_id: issue_id,
       issue_identifier: identifier || "issue",
       labels: labels || [],
-      branch_name: branch_name
+      branch_name: branch_name,
+      pr_url: Map.get(issue, :pr_url)
     }
   end
 
@@ -654,13 +655,16 @@ defmodule SymphonyElixir.Workspace do
       |> Map.put("SYMPHONY_ISSUE_LABELS", Enum.join(labels, ","))
       |> Map.put("SYMPHONY_BRANCH_NAME", issue_context[:branch_name] || "")
 
-    # Routing helper: determine repo from labels
+    # Routing: the issue's resolved PR is authoritative for which repo's slot
+    # to lease — labels are a guess and can be wrong (GEA-5247: `3.0` label on
+    # gf_platform work leased a procurement slot; the worker could only refuse).
     repo =
-      cond do
-        Enum.any?(labels, &label_matches_repo?(&1, "2.0")) -> "platform"
-        Enum.any?(labels, &label_matches_repo?(&1, "3.0")) -> "procurement"
-        true -> ""
-      end
+      repo_from_pr_url(issue_context[:pr_url]) ||
+        cond do
+          Enum.any?(labels, &label_matches_repo?(&1, "2.0")) -> "platform"
+          Enum.any?(labels, &label_matches_repo?(&1, "3.0")) -> "procurement"
+          true -> ""
+        end
 
     env
     |> Map.put("SYMPHONY_REPO", repo)
@@ -673,6 +677,16 @@ defmodule SymphonyElixir.Workspace do
     normalized = String.downcase(label)
     normalized == prefix or String.starts_with?(normalized, prefix)
   end
+
+  defp repo_from_pr_url(url) when is_binary(url) do
+    case Regex.run(~r{github\.com/[^/]+/(gf_platform|gf_procurement)/pull/}, url) do
+      [_, "gf_platform"] -> "platform"
+      [_, "gf_procurement"] -> "procurement"
+      _ -> nil
+    end
+  end
+
+  defp repo_from_pr_url(_), do: nil
 
   defp issue_log_context(%{issue_id: issue_id, issue_identifier: issue_identifier}) do
     "issue_id=#{issue_id || "n/a"} issue_identifier=#{issue_identifier || "issue"}"

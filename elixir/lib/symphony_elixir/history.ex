@@ -344,6 +344,17 @@ defmodule SymphonyElixir.History do
     |> Repo.one() || %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
   end
 
+  @doc "Most recent PR URL the evaluator recorded for an issue, or nil."
+  @spec latest_pr_url(String.t()) :: String.t() | nil
+  def latest_pr_url(identifier) when is_binary(identifier) do
+    Run
+    |> where([r], r.issue_identifier == ^identifier and not is_nil(r.eval_pr_url))
+    |> order_by([r], desc: r.started_at)
+    |> limit(1)
+    |> select([r], r.eval_pr_url)
+    |> Repo.one()
+  end
+
   @doc """
   Most-recent PR URL per issue identifier, from runs that recorded one. Used to
   show an issue's open PR on the dashboard even on a run (running or completed)

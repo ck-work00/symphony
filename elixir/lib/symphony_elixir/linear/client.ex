@@ -121,6 +121,47 @@ defmodule SymphonyElixir.Linear.Client do
   }
   """
 
+  @attachments_query """
+  query SymphonyLinearAttachments($issueId: String!) {
+    issue(id: $issueId) {
+      attachments(first: 50) {
+        nodes {
+          url
+        }
+      }
+    }
+  }
+  """
+
+  @doc """
+  GitHub PR URLs attached to an issue by the Linear-GitHub integration,
+  oldest-first. Repo-agnostic — this finds the PR even when label-based repo
+  routing guesses wrong.
+  """
+  @spec fetch_issue_pr_urls(String.t()) :: {:ok, [String.t()]} | {:error, term()}
+  def fetch_issue_pr_urls(issue_id) when is_binary(issue_id) do
+    case graphql(@attachments_query, %{issueId: issue_id}) do
+      {:ok, %{"data" => %{"issue" => %{"attachments" => %{"nodes" => nodes}}}}} ->
+        urls =
+          nodes
+          |> Enum.map(& &1["url"])
+          |> Enum.filter(fn url ->
+            is_binary(url) and Regex.match?(~r{github\.com/[^/]+/[^/]+/pull/\d+}, url)
+          end)
+
+        {:ok, urls}
+
+      {:ok, %{"errors" => errors}} ->
+        {:error, {:linear_graphql_errors, errors}}
+
+      {:error, reason} ->
+        {:error, reason}
+
+      _ ->
+        {:error, :linear_unknown_payload}
+    end
+  end
+
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     cond do

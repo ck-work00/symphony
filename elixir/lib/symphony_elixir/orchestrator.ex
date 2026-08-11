@@ -886,11 +886,19 @@ defmodule SymphonyElixir.Orchestrator do
         # Find the issue's open PR (if any) so the plan workflow assesses against
         # the right branch, and the worker checks it out. The plan — not a phase
         # judge — decides what to dispatch; that happens in do_dispatch_issue.
+        # The evaluator's stored PR wins over the branch-name search: the search
+        # guesses by prefix and picks the wrong sibling when two open branches
+        # share the issue identifier (GEA-5377: #2388 shadowed #2385).
         {pr_url, pr_branch} =
-          case check_existing_pr(refreshed_issue) do
+          case stored_pr(refreshed_issue) || attachment_pr(refreshed_issue) ||
+                 check_existing_pr(refreshed_issue) do
             {:pr_exists, url, branch} -> {url, branch}
             :no_pr -> {nil, nil}
           end
+
+        # Carry the resolved PR on the issue so slot routing (workspace hooks)
+        # leases the PR's repo, not the repo the product label guesses.
+        refreshed_issue = %{refreshed_issue | pr_url: pr_url}
 
         pr_metadata = %{existing_pr_url: pr_url, existing_pr_branch: pr_branch}
         do_dispatch_issue(state, refreshed_issue, attempt, Map.merge(metadata, pr_metadata))
@@ -1321,15 +1329,15 @@ defmodule SymphonyElixir.Orchestrator do
             dispatch_review(issue, metadata, plan, reason)
 
           :ok ->
-            complete_tester_action(issue, metadata, plan)
+            complete_tester_action(issue, metadata, plan, metadata[:existing_pr_url])
         end
     end
   end
 
   # The PR is externally clean (no conflicts, CI green, no requested changes) —
   # the tester's verdict is the last gate before :done.
-  defp complete_tester_action(issue, metadata, plan) do
-    case tester_gate(issue, plan) do
+  defp complete_tester_action(issue, metadata, plan, pr_url) do
+    case tester_gate(issue, plan, pr_url) do
       :approved ->
         :done
 
@@ -1542,11 +1550,21 @@ defmodule SymphonyElixir.Orchestrator do
               # Block on its review directly; the worker clears it by resolving the
               # comments and posting `@coderabbitai resolve` (auto-approves on green CI).
               {:ok, decoded} ->
-                if coderabbit_requested_changes?(decoded) do
-                  {:request_changes,
-                   "CodeRabbit requested changes — resolve its comments and post `@coderabbitai resolve`"}
-                else
-                  :ok
+                cond do
+                  coderabbit_requested_changes?(decoded) ->
+                    {:request_changes,
+                     "CodeRabbit requested changes — resolve its comments and post `@coderabbitai resolve`"}
+
+                  # A later CodeRabbit round can land as a COMMENTED review with
+                  # unresolved threads and an empty reviewDecision — invisible to
+                  # both checks above, so the issue completed with open Major
+                  # comments (GEA-5242). Unresolved threads block the same way.
+                  (n = unresolved_review_threads(repo, number)) > 0 ->
+                    {:request_changes,
+                     "#{n} unresolved review threads — address them and post `@coderabbitai resolve`"}
+
+                  true ->
+                    :ok
                 end
 
               _ ->
@@ -1562,6 +1580,31 @@ defmodule SymphonyElixir.Orchestrator do
     end
   rescue
     _ -> :ok
+  end
+
+  # Count of unresolved PR review threads. Fail-safe like the other gates: any
+  # gh/parse failure counts as 0 so a transient error never wedges a finished
+  # issue.
+  defp unresolved_review_threads(repo, number) do
+    [owner, name] = String.split(repo, "/", parts: 2)
+
+    query =
+      "query { repository(owner:\"#{owner}\", name:\"#{name}\") { pullRequest(number:#{number}) { reviewThreads(first:100) { nodes { isResolved } } } } }"
+
+    jq = "[.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved|not)] | length"
+
+    case gh_cmd(["api", "graphql", "-f", "query=#{query}", "--jq", jq]) do
+      {output, 0} ->
+        case Integer.parse(String.trim(output)) do
+          {n, _} -> n
+          :error -> 0
+        end
+
+      _ ->
+        0
+    end
+  rescue
+    _ -> 0
   end
 
   defp coderabbit_requested_changes?(%{"latestReviews" => reviews}) when is_list(reviews) do
@@ -1596,13 +1639,13 @@ defmodule SymphonyElixir.Orchestrator do
   # the last Implement dispatch is stale (code changed since), so re-test. Fall
   # back to parsing the Linear report only when there is no DB verdict yet
   # (legacy / in-flight issues), so we don't force a needless re-test on rollout.
-  defp tester_gate(issue, plan) do
+  defp tester_gate(issue, plan, pr_url) do
     last_implement = last_implement_dispatch_finish(plan)
 
     case History.latest_tester_verdict(Map.get(issue, :identifier)) do
       %SymphonyElixir.History.TesterVerdict{} = verdict ->
         cond do
-          stale_verdict?(verdict, last_implement) ->
+          stale_verdict?(verdict, last_implement) and not verdict_at_head?(verdict, pr_url) ->
             :needs_test
 
           verdict.verdict == "APPROVE" ->
@@ -1631,6 +1674,16 @@ defmodule SymphonyElixir.Orchestrator do
   defp stale_verdict?(%{inserted_at: at}, last_implement) do
     not is_nil(last_implement) and DateTime.compare(at, last_implement) != :gt
   end
+
+  # A verdict at the PR's current head is fresh no matter when it was recorded:
+  # a later dispatch that pushed nothing (a no-op Fix CI rerun) must not
+  # invalidate an APPROVE for the same code (GEA-5113/GEA-5115 tester loop).
+  defp verdict_at_head?(%{commit_sha: sha}, pr_url) when is_binary(sha) and sha != "" do
+    head = pr_head_sha(pr_url)
+    head != "?" and String.starts_with?(sha, head)
+  end
+
+  defp verdict_at_head?(_, _), do: false
 
   defp tester_gate_from_linear(issue, last_implement) do
     case SymphonyElixir.Linear.Client.fetch_all_issue_comments(Map.get(issue, :id)) do
@@ -1689,12 +1742,37 @@ defmodule SymphonyElixir.Orchestrator do
         end
       end
 
+      # A parked issue gets no more dispatches, so nothing would ever undraft
+      # its PR. If the work is there with green CI, hand it to human review
+      # rather than stranding it (GEA-5247 sat draft with 7/7 checks green).
+      undraft_parked_pr(issue)
+
       # Sticky: `completed` issues are re-assessed every poll, which for a
       # blocked issue meant re-blocking — and re-posting the needs-human
       # comment — every ~2.5 minutes (observed on GEA-4478).
       state = %{state | blocked: MapSet.put(state.blocked, issue.id)}
       complete_issue(state, issue.id)
     end
+  end
+
+  defp undraft_parked_pr(issue) do
+    case stored_pr(issue) || attachment_pr(issue) do
+      {:pr_exists, url, _branch} ->
+        if ci_gate(url) == :ok do
+          case System.cmd("gh", ["pr", "ready", url], stderr_to_stdout: true) do
+            {_out, 0} ->
+              Logger.info("Undrafted parked PR #{url} (CI green) so human review can proceed")
+
+            {out, _} ->
+              Logger.warning("Failed to undraft parked PR #{url}: #{String.trim(out)}")
+          end
+        end
+
+      _ ->
+        :ok
+    end
+  rescue
+    error -> Logger.warning("undraft_parked_pr failed for #{issue_context(issue)}: #{Exception.message(error)}")
   end
 
   # Transient plan-generation failures are session-startup blips (the planner's
@@ -1819,11 +1897,18 @@ defmodule SymphonyElixir.Orchestrator do
           # the Grader can never verify "update PR description" rows.
           pr_body = fetch_pr_body(running_entry)
 
+          # Code-context evidence: the change census re-derives, from the diff,
+          # which lib/ callers of changed functions the diff did NOT touch — the
+          # "signature changed, did every caller follow?" gap the stat-only diff
+          # can't show. Un-blinds the grader on the #1 defect class.
+          census = fetch_dispatch_census(running_entry)
+
           case SymphonyElixir.Planning.Workflow.grade_dispatch(dispatch,
                  plan: plan,
                  diff: diff,
                  test_output: "",
-                 pr_body: pr_body
+                 pr_body: pr_body,
+                 census: census
                ) do
             {:ok, {verdict, _updated_plan}} ->
               Logger.info("Grader verdict for plan dispatch=#{dispatch_id} verdict=#{verdict} issue=#{running_entry[:identifier]}")
@@ -1855,17 +1940,46 @@ defmodule SymphonyElixir.Orchestrator do
   # Falls back to an empty diff if anything goes wrong — the Grader will then
   # see "no changes" and mark every assigned row missing, which is the right
   # answer for a dispatch that failed to push code.
-  defp fetch_dispatch_diff(running_entry) do
-    workspace_path =
-      with identifier when is_binary(identifier) <- running_entry[:identifier],
-           workspace = Path.join(SymphonyElixir.Config.workspace_root(), identifier),
-           slot_file = Path.join(workspace, ".symphony_slot"),
-           {:ok, content} <- File.read(slot_file),
-           [_, dir] <- Regex.run(~r/DIRECTORY=(.+)/, content) do
-        dir |> String.trim()
-      else
-        _ -> nil
+  # Resolve the slot working-copy directory for a running dispatch by reading
+  # DIRECTORY= out of the workspace's `.symphony_slot` file. nil if unresolvable.
+  defp dispatch_slot_dir(running_entry) do
+    with identifier when is_binary(identifier) <- running_entry[:identifier],
+         workspace = Path.join(SymphonyElixir.Config.workspace_root(), identifier),
+         slot_file = Path.join(workspace, ".symphony_slot"),
+         {:ok, content} <- File.read(slot_file),
+         [_, dir] <- Regex.run(~r/DIRECTORY=(.+)/, content) do
+      String.trim(dir)
+    else
+      _ -> nil
+    end
+  end
+
+  # Run the change census in the dispatch's slot: which lib/ callers of the
+  # functions this branch changed live in files the diff didn't touch. Best
+  # effort — empty string on any failure so the grader just loses this evidence
+  # channel rather than the grade crashing.
+  defp fetch_dispatch_census(running_entry) do
+    slot_dir = dispatch_slot_dir(running_entry)
+    script = Path.join(:code.priv_dir(:symphony_elixir), "scripts/change-census.sh")
+
+    if slot_dir && File.dir?(slot_dir) && File.exists?(script) do
+      base = read_base_branch(slot_dir)
+
+      case System.cmd("bash", [script, base], cd: slot_dir, stderr_to_stdout: true) do
+        {output, 0} -> String.trim(output)
+        _ -> ""
       end
+    else
+      ""
+    end
+  rescue
+    error ->
+      Logger.warning("fetch_dispatch_census failed: #{Exception.message(error)}")
+      ""
+  end
+
+  defp fetch_dispatch_diff(running_entry) do
+    workspace_path = dispatch_slot_dir(running_entry)
 
     if workspace_path && File.dir?(workspace_path) do
       base = read_base_branch(workspace_path)
@@ -3284,6 +3398,65 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp pr_conflicting?(_), do: false
+
+  # The PR the evaluator recorded for this issue's last run, if it is still
+  # open — ground truth from the workspace's actual pushed branch. Falls back
+  # (nil) when the issue has never run, the PR closed/merged, or gh fails.
+  defp stored_pr(%Issue{identifier: identifier}) when is_binary(identifier) do
+    case History.latest_pr_url(identifier) do
+      url when is_binary(url) ->
+        case open_pr_info(url) do
+          %{url: url, branch: branch} -> {:pr_exists, url, branch}
+          nil -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp stored_pr(_issue), do: nil
+
+  # PRs the Linear-GitHub integration attached to the issue — repo-agnostic
+  # ground truth, so the PR is found even when label-based repo routing points
+  # at the wrong repo (GEA-5247: a gf_platform PR under a `3.0` label was
+  # invisible to the branch search). Oldest open PR wins: the original work PR
+  # beats later side-PRs sharing the issue prefix.
+  defp attachment_pr(%Issue{id: issue_id}) when is_binary(issue_id) do
+    case SymphonyElixir.Linear.Client.fetch_issue_pr_urls(issue_id) do
+      {:ok, [_ | _] = urls} ->
+        urls
+        |> Enum.map(&open_pr_info/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.sort_by(& &1.number)
+        |> case do
+          [%{url: url, branch: branch} | _] -> {:pr_exists, url, branch}
+          [] -> nil
+        end
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp attachment_pr(_issue), do: nil
+
+  defp open_pr_info(url) when is_binary(url) do
+    with {out, 0} <-
+           System.cmd("gh", ["pr", "view", url, "--json", "state,headRefName,number"],
+             stderr_to_stdout: true
+           ),
+         {:ok, %{"state" => "OPEN", "headRefName" => branch, "number" => number}} <-
+           Jason.decode(out) do
+      %{url: url, branch: branch, number: number}
+    else
+      _ -> nil
+    end
+  end
 
   defp check_existing_pr(%Issue{identifier: identifier, labels: labels} = issue) when is_binary(identifier) do
     repos = repos_for_labels(labels)

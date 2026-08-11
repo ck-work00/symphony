@@ -13,6 +13,10 @@ defmodule SymphonyElixir.Linear.Issue do
     :branch_name,
     :url,
     :assignee_id,
+    # Resolved open PR for this issue, set by the orchestrator at dispatch
+    # time (stored → Linear-attached → branch search). Authoritative for
+    # slot/repo routing; labels are only a fallback guess.
+    :pr_url,
     blocked_by: [],
     labels: [],
     assigned_to_worker: true,

@@ -96,6 +96,20 @@ defmodule SymphonyElixir.Planning.Planner do
          fall-through that casts "inbox" as a record id).
      A cross-cutting component (touches the layout shell or ≥2 sibling pages) is
      rarely one dispatch: split it along these seams, and say so in `notes`.
+  10. Call-site completeness for ANY changed symbol — not just UI. The single
+      most common failure is a change that lands in one place but not the
+      others that must move with it: a function whose signature / return shape
+      changes while some callers keep the old usage; a schema field or table
+      whose new writer is added but the legacy write paths still bypass it; a
+      new module that nothing calls. Whenever a row changes the contract of a
+      backend symbol (a function's arguments or return, a schema field, a
+      context API), it OWNS every site that must change with it. Either list
+      those call sites explicitly in that row's `touches`, or emit a sibling
+      "update all callers/writers of X" row that names them. State the sweep in
+      `notes` ("changing `Foo.bar/2`'s return — callers in A, B, C must be
+      updated") so the worker and grader know completeness spans more than the
+      defining file. The gaps live in the CALLERS of what you change, and a
+      green test suite does not prove they were carried.
 
   Bias the plan toward what the issue body and process docs actually ask
   for. Do not invent rows the issue doesn't request.

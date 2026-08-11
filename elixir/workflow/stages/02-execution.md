@@ -30,7 +30,7 @@ Work the rows top-to-bottom in the "Your assigned rows" list. For each row:
 
 1. **Write a failing test** that exercises the row's behavior. Use the file paths from the row's `Tests:` line. If the row lists no test path (frontend-only, documentation, or research rows), skip this — the committed artifact named in `Touches:` is the row's deliverable, and the Grader judges it on substance.
 2. **Run that test** to confirm it fails: `direnv exec . mix test <path>`.
-3. **Implement** the production code in the files listed under `Touches:`. Stay within those files unless an unavoidable refactor demands more — if so, scope the spillover narrowly and call it out in your commit message.
+3. **Implement** the production code, starting from the files listed under `Touches:`. But `Touches:` is a Planner *guess* and is routinely incomplete — the most common defect this system produces is a change that updates one file and leaves its callers behind. So when you change a function's signature or return shape, a schema field, or any shared contract, **grep the repo for every caller/reader and update them too** — that is part of closing the row, not scope creep. Name any files you touched beyond `Touches:` in your commit message.
 4. **Run the test again** to confirm it passes.
 5. **Commit per row**, with a message naming the row id: `{{ issue.identifier }}: <row-id> <short summary>`.
 
@@ -43,7 +43,18 @@ direnv exec . mix format
 
 If a row's test passes but a sibling row breaks, fix the regression before moving on. Don't ship a green commit that breaks adjacent rows.
 
-### Step 3: Push
+### Step 3: Completeness sweep (before you push)
+
+For every function whose signature or return you changed, and every schema field or table you added, grep the repo for its other callers/readers:
+
+```bash
+git diff origin/${BASE_BRANCH:-main}..HEAD | grep -E '^[+-].*\b(def|defp|field :)' # what you changed
+grep -rn '\bthe_changed_name\b' lib/                                              # who else uses it
+```
+
+Any call site that still uses the old contract is an unfinished row — update it (and its test) before pushing. A green suite does not prove you carried the callers; the orchestrator runs the same census and will send the work back if you didn't.
+
+### Step 4: Push
 
 After all assigned rows have a passing test and a commit:
 
@@ -58,7 +69,7 @@ After all assigned rows have a passing test and a commit:
    ```
    If push fails non-fast-forward, `git push --force-with-lease` after confirming you're not stomping on other workers.
 
-### Step 4: PR
+### Step 5: PR
 
 If no PR exists for this issue, open one as a **draft** targeting `${BASE_BRANCH:-main}`:
 ```bash
@@ -72,7 +83,7 @@ automation and pulls reviewers (CodeRabbit) in on half-finished work. The PR sta
 draft until the work is complete and verified; the orchestrator promotes it to
 ready-for-review once the plan grades complete and the tester approves.
 
-### Step 5: Stop
+### Step 6: Stop
 
 End your turn. Do not:
 - Post a status comment on Linear (orchestrator handles this).

@@ -118,6 +118,21 @@ defmodule SymphonyElixir.Planning.Grader do
       dismiss/route helper, the over-any-section safety-net route), because that
       shell/integration surface is exactly where parity migrations silently fall
       short while every content row looks complete.
+  11. **Use the change census (if a "## Change census" section is present).**
+      It lists, for functions this branch changed, the call sites in `lib/`
+      that the diff did NOT touch. The most common real defect is a changed
+      function whose contract moved (new/renamed/removed argument, changed
+      return shape or behavior) while one of these un-touched callers kept the
+      old usage. For each row that changed such a function: check the census's
+      listed callers, and if the row's change would break or silently misfire
+      at a caller the diff left alone, mark the row `partial` (note the specific
+      file:line from the census). Also: a census "Possibly dead code" entry for
+      a module a row was supposed to wire in means that row is `partial`, not
+      `done`; a census "Delivery" warning about unpushed commits means the
+      work isn't really on the branch — grade against what's actually pushed.
+      The census is heuristic and greps by call syntax, so it over-reports
+      common names — a bare mention is not proof of a defect; only downgrade a
+      row when the changed contract genuinely leaves a listed caller stale.
   """
 
   @doc """
@@ -158,6 +173,7 @@ defmodule SymphonyElixir.Planning.Grader do
     test_output = Keyword.get(evidence, :test_output, "")
     notes = Keyword.get(evidence, :notes, "")
     pr_body = Keyword.get(evidence, :pr_body)
+    census = Keyword.get(evidence, :census, "")
 
     assigned = Map.get(dispatch.assigned_rows_json || %{}, "rows", [])
     plan_rows = Map.get(plan.plan_json || %{}, "rows", [])
@@ -166,6 +182,7 @@ defmodule SymphonyElixir.Planning.Grader do
       "## Plan (full context)\n\n```json\n#{Jason.encode!(plan_rows, pretty: true)}\n```",
       "## Rows assigned to this dispatch\n\n```json\n#{Jason.encode!(assigned, pretty: true)}\n```",
       "## Branch state vs base\n\nThis is a structured summary (file list + commit subjects + diff stats), NOT a full diff dump. `assigned_rows[*].touches` are Planner GUESSES — treat them as hints only. Grade each row on its description against the actual files and content plus the commit subjects; if a row's `touches` paths don't appear (e.g. the plan used a different namespace), match on intent + commits rather than marking it missing.\n\n```\n#{truncate(diff, 200_000)}\n```",
+      census_section(census),
       pr_body_section(pr_body),
       "## Test output\n\n```\n#{truncate(test_output, 20_000)}\n```",
       if(notes != "", do: "## Additional context\n\n#{notes}", else: nil)
@@ -173,6 +190,18 @@ defmodule SymphonyElixir.Planning.Grader do
 
     sections |> Enum.reject(&is_nil/1) |> Enum.join("\n\n---\n\n")
   end
+
+  defp census_section(census) when is_binary(census) do
+    trimmed = String.trim(census)
+
+    if trimmed == "" or String.starts_with?(trimmed, "(change census: no") do
+      nil
+    else
+      "## Change census (callers the diff may have forgotten)\n\nHeuristic, code-derived evidence: for functions this branch changed, these are call sites in `lib/` that the diff did NOT touch, plus new modules with no caller and any unpushed commits. Use it to apply requirement 11 — if a changed function's contract moved and a listed caller wasn't updated to match, the owning row is `partial`, not `done`.\n\n```\n#{truncate(trimmed, 40_000)}\n```"
+    end
+  end
+
+  defp census_section(_), do: nil
 
   defp pr_body_section(nil), do: nil
   defp pr_body_section(""), do: nil

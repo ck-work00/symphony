@@ -119,6 +119,25 @@ Drift here (wrong backdrop, wrong breakpoint, a missing entry point, the wrong d
 
 A flag is only flippable if turning it on doesn't break its neighbors. With every relevant `lv_*` flag ON, load the component's own route AND every sibling section route that shares its layout or data helpers. Assert each returns HTTP 200 with a clean console — no 500, `KeyError`, or `Ecto.Query.CastError`. This is cheap and catches the classic flip failures: a `/:section/inbox` path cast as a record id, or a shared helper that returns an incomplete struct once the flag enables a new template branch. Any crash is `❌` and forces `REQUEST_CHANGES` (or `BLOCKED` if the route won't load at all), regardless of how clean the content rows looked.
 
+### Step 4d: Structural completeness sweep (every PR, not just UI)
+
+The browser walk proves the paths you walked work; it says nothing about the callers you didn't walk. The dominant defect in this system is a change that lands in one place and leaves its siblings behind — a function whose contract moved while some callers kept the old usage, a schema field or table whose new writer was added but legacy write paths still bypass it, a new module nothing calls. A green suite hides all three. So run a static sweep, code-aware, before you decide:
+
+```bash
+BASE="${BASE_BRANCH:-main}"
+git fetch origin "$BASE" >/dev/null 2>&1
+# What contracts did this branch change?
+git diff "origin/$BASE..HEAD" | grep -E '^[+-].*\b(def |defp |field :|create table|alter table)'
+```
+
+For each changed function signature / return shape, each added-or-changed schema field or table, and each new module:
+
+1. `grep -rn '\bthe_name\b' lib/` (and the table name for schema changes) for every other caller/reader/writer.
+2. Open each hit the diff did NOT touch. Does it still pass the old arguments, read the legacy column, or otherwise assume the old contract? If so that is a **real gap**, not a style nit — verify it end to end (does the old caller now misfire or silently no-op?), then mark it `❌`.
+3. A new module with no non-test caller is dead code → `❌` the row that was meant to wire it in.
+
+Report what you swept and what you found. Treat a confirmed stale caller / un-updated writer / dead module exactly like a broken Contract row: it forces `REQUEST_CHANGES`, with the specific `file:line` in your reason. Be concrete — a mere textual mention of a name is not a defect; only flag a caller that genuinely still relies on the old contract.
+
 ### Step 5: Post the Tester Report — to Linear ONLY
 
 **The Tester Report goes to the Linear issue and NOWHERE else.** The orchestrator
@@ -148,6 +167,7 @@ Report format:
 - Asset bundle: <fresh ~XXX KB | stub>
 - Shell parity (overlay/cross-cutting only): <n/a | verified: dismiss+breakpoints+entry-points | drift: <list>>
 - Flippability sweep: <n/a | routes loaded clean: <list> | crashes: <list>>
+- Structural completeness sweep: <changed contracts checked: <list of symbols/tables> | callers/writers all carried | stale: <file:line list>>
 
 ### Verified rows
 
@@ -179,7 +199,7 @@ like "no drift, standing recommendation holds" or "see prior report" and do NOT
 reference a previous verdict instead of stating one — the orchestrator can't
 parse that, reads it as REQUEST_CHANGES, and loops the issue forever. Choose:
 
-- **APPROVE** — every Contract row is `✅ verified`, console is clean, no drift, and (for an overlay/cross-cutting component) shell parity is verified and the flippability sweep is clean. The orchestrator marks Test done and dispatches Share Evidence.
+- **APPROVE** — every Contract row is `✅ verified`, console is clean, no drift, the structural completeness sweep is clean (no stale caller / un-updated writer / dead module), and (for an overlay/cross-cutting component) shell parity is verified and the flippability sweep is clean. The orchestrator marks Test done and dispatches Share Evidence.
 - **REQUEST_CHANGES** — at least one row is `⚠` or `❌`. The orchestrator re-dispatches Implement to address the gaps.
 - **BLOCKED** — the page can't be tested at all (preflight failed, page won't load, slot is broken). Include a description of the blocker.
 

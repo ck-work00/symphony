@@ -1344,6 +1344,14 @@ defmodule SymphonyElixir.Orchestrator do
       :needs_test ->
         Logger.info("Plan code rows complete for #{issue.identifier}; dispatching the Test tester sub-agent")
 
+        # Engage CodeRabbit now, in parallel with the tester, instead of only
+        # after tester approval — its diff-aware review is a second net, and
+        # getting its comments early means they're triaged (via the existing
+        # review_gate → Resolve Review path) before the human gate rather than
+        # serially after. The PR stays a draft; `@coderabbitai review` reviews
+        # on request regardless. Once per PR head so we don't re-ping each poll.
+        maybe_request_coderabbit_review(plan, pr_url)
+
         metadata =
           metadata
           |> Map.put(:retask_phases, ["Test"])
@@ -1363,6 +1371,51 @@ defmodule SymphonyElixir.Orchestrator do
         {:blocked, {:tester_blocked, reason}}
     end
   end
+
+  # Ask CodeRabbit to review the PR now (parallel to the tester), at most once
+  # per PR head. Best-effort and off the orchestrator loop — a gh hiccup must
+  # never stall dispatch. The head is stored in plan metadata so a re-poll at
+  # the same head doesn't re-ping; a new commit (a Resolve Review/Fix CI push)
+  # advances the head and re-requests, which is correct — CR should re-review.
+  defp maybe_request_coderabbit_review(plan, pr_url) when is_binary(pr_url) and pr_url != "" do
+    head = pr_head_sha(pr_url)
+    already = get_in(plan.metadata || %{}, ["cr_review_head"])
+
+    if head != "?" and head != already do
+      Task.Supervisor.start_child(SymphonyElixir.TaskSupervisor, fn ->
+        case System.cmd("gh", ["pr", "comment", pr_url, "--body", "@coderabbitai review"],
+               stderr_to_stdout: true
+             ) do
+          {_out, 0} ->
+            Logger.info("Requested CodeRabbit review on #{pr_url} (head #{head}) in parallel with the tester")
+
+            # Record only on success, against a fresh plan row, so a failed
+            # request retries next poll and a concurrent metadata write isn't
+            # clobbered.
+            case SymphonyElixir.Repo.get(SymphonyElixir.Planning.Plan, plan.id) do
+              %SymphonyElixir.Planning.Plan{} = fresh ->
+                Planning.update_plan(fresh, %{
+                  metadata: Map.put(fresh.metadata || %{}, "cr_review_head", head)
+                })
+
+              _ ->
+                :ok
+            end
+
+          {out, _} ->
+            Logger.warning("Failed to request CodeRabbit review on #{pr_url}: #{String.trim(out)}")
+        end
+      end)
+    end
+
+    :ok
+  rescue
+    error ->
+      Logger.warning("maybe_request_coderabbit_review failed: #{Exception.message(error)}")
+      :ok
+  end
+
+  defp maybe_request_coderabbit_review(_, _), do: :ok
 
   # The latest @agent comment, if no feedback-triggered Implement dispatch has
   # STARTED since it was posted. Only a dispatch this gate itself triggered

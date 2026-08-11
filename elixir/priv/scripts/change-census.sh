@@ -77,11 +77,19 @@ report="$(
     # the bare word — this drops comment prose and same-named local variables.
     hits="$(grep -rnE --include='*.ex' --include='*.exs' -e "\b${name}\(" "$SEARCH" 2>/dev/null | sed 's|^\./||')"
     [ -z "$hits" ] && continue
+    # Files that DEFINE their own `def/defp name(` — a `name(` call in such a
+    # file is that file's own same-named helper (or a different module's
+    # function that merely shares the name), not a caller of the changed
+    # function. Excluding them is the single biggest noise cut.
+    deffiles="$(grep -rlE --include='*.ex' --include='*.exs' -e "^[[:space:]]*(def|defp)[[:space:]]+${name}[( ]" "$SEARCH" 2>/dev/null | sed 's|^\./||')"
     ext=""
     while IFS= read -r line; do
       [ -z "$line" ] && continue
       f="${line%%:*}"
-      is_changed "$f" || ext+="$line"$'\n'
+      is_changed "$f" && continue
+      grep -qxF "$f" <<<"$deffiles" && continue           # own/same-name helper
+      case "$line" in *"${name}(s)"*) continue ;; esac    # plural prose: job(s), table(s)
+      ext+="$line"$'\n'
     done <<<"$hits"
     ext="$(grep -v '^$' <<<"$ext" 2>/dev/null || true)"
     [ -z "$ext" ] && continue
@@ -104,7 +112,9 @@ else
 fi
 
 # --- possibly-dead new modules ----------------------------------------------
-NEW_MODULES="$(git diff -U0 "$RANGE" -- '*.ex' 2>/dev/null \
+# Only lib/ modules — a new module under test/ or test/support/ has no lib/
+# caller by construction and would always false-flag as dead.
+NEW_MODULES="$(git diff -U0 "$RANGE" -- 'lib/' 2>/dev/null \
   | grep -E '^\+[[:space:]]*defmodule[[:space:]]' \
   | sed -E 's/^\+[[:space:]]*defmodule[[:space:]]+([A-Za-z0-9_.]+).*/\1/' \
   | sort -u)"
@@ -112,11 +122,17 @@ if [ -n "$NEW_MODULES" ]; then
   dead=""
   while IFS= read -r mod; do
     [ -z "$mod" ] && continue
-    # Grep the short (last-segment) name too — routers/LiveViews reference it
-    # aliased (`live "/x", TimelineLive`), which a full-name grep would miss and
-    # then falsely flag as dead.
     short="${mod##*.}"
-    nfiles="$(grep -rlE --include='*.ex' --include='*.exs' -e "(${mod//./\\.}|\b${short}\b)" "$SEARCH" 2>/dev/null \
+    # Count references in a MODULE position — full dotted name, `Short.` call,
+    # an `alias`, or a list/router slot (`, Short`, `{.., Short}`). A bare word
+    # match falsely counts prose/other identifiers and hides genuinely-dead
+    # modules; the aliased forms are how routers/LiveViews wire a module in.
+    nfiles="$(grep -rlE --include='*.ex' --include='*.exs' \
+                -e "${mod//./\\.}" \
+                -e "\b${short}\." \
+                -e "alias[[:space:]].*\b${short}\b" \
+                -e "[,{][[:space:]]*${short}\b" \
+                "$SEARCH" 2>/dev/null \
               | grep -v '_test\.exs$' | grep -c .)"
     [ "$nfiles" -le 1 ] && dead+="- \`$mod\` — referenced in ≤1 non-test file; likely defined but never wired in."$'\n'
   done <<<"$NEW_MODULES"

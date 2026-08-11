@@ -26,15 +26,36 @@ gate; CodeRabbit (diff-only) can't see them either. Shipped three layers:
   tester (fresh, tool-enabled, whole-repo) statically greps callers/writers of
   changed contracts; a stale caller / un-updated writer / dead module forces
   REQUEST_CHANGES. Reuses the existing tester verdict — no new orchestrator state.
-Residual:
-- **Replay validation.** Run the census against the labeled defect set
-  (`CENSUS_RANGE="<sha>^..<sha>"` env override) — confirm it lights up GEA-5518's
-  EmployeeLoader / GEA-5744's CSV writer and stays quiet on clean PRs before
-  trusting it past advisory. Known blind spot: a miss INSIDE an already-touched
-  file (GEA-4849's un-threaded arg) — census only sees untouched files; Layer 2's
-  LLM lens is what covers that half.
-- **CodeRabbit-during-build** (plan decision 2, deferred): trigger `@coderabbitai
-  review` once the plan grades complete rather than suppressing it until the end.
+**Replay validation (done 2026-08-11) — the census is a narrow aid, NOT a
+completeness net.** Replayed against the labeled defect set: it caught **0 of 4**.
+Two are structural blind spots — an intra-file miss (GEA-4849, un-threaded arg in
+an already-touched file) and the **missing-writer / bypassed-call class**
+(GEA-5744, 5518) where the defective path never *names* the changed symbol, so no
+grep of changed symbols can see it. That class is ~half the real defects and is
+fundamentally **Layer 2's job** (the tester's LLM sweep reads the code and can
+reason "this creation path should write jobs_locations but doesn't"). The census
+is a *changed-caller* detector for signature-change fan-out — genuinely useful
+when the change is that shape (3/8 of a regular PR sample gave clean on-target
+output), useless-to-noisy otherwise. Grader requirement 11 already frames it as
+advisory; keep it there, do not gate on it. Applied three grep fixes from the
+validation: drop files that define their own `defp name(` (biggest noise cut),
+drop `name(s)` plural-prose matches, and fix the dead-code check (lib/-only so
+test-support modules don't false-flag; module-position short-name grep so a
+genuinely-dead module isn't hidden by bare-word matches). Residual noise ceiling:
+stdlib name collisions (`Date.add`) — needs alias resolution, not worth it.
+
+**CodeRabbit-during-build (done 2026-08-11).** `orchestrator.ex
+maybe_request_coderabbit_review/2` posts `@coderabbitai review` at `:needs_test`
+(code complete, PR externally clean) so CR reviews in parallel with the tester,
+once per PR head. Its feedback flows through the existing review_gate → Resolve
+Review path. Behavior note: a CR request-changes at that point triages (and
+undrafts) before the tester walk — defensible (all rows done + CI green), shifts
+the In-Review transition slightly earlier.
+
+Residual: Layer 2 (the tester's structural sweep in 03-test.md step 4d) now
+carries the real completeness load for the missing-writer class, and it is
+prompt-based and unvalidated. Worth a live check that a tester actually catches a
+missing-writer case, since the census provably can't.
 
 ## PR discovery now reads Linear attachments (done 2026-08-04); residual gaps
 Dispatch resolves the issue's PR as: evaluator-stored PR → Linear-attached PR

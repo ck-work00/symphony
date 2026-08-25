@@ -308,6 +308,40 @@ kill_slot_orphans() {
   done
 }
 
+# Migrate, self-healing the backdated-migration divergence. Ecto runs versions in
+# ASCENDING order, so a migration stamped in the past (a file added later but
+# hand-timestamped instead of via `mix ecto.gen.migration`) sits BELOW versions a
+# long-lived slot DB already recorded and becomes a permanent "pending migration
+# in the past". If its schema is already at target (the drop hits a missing
+# object / the create hits an existing one), the migrate aborts, the endpoint
+# 500s with PendingMigrationError, and the health gate below spins 450s then
+# churns re-dispatch forever (hit repeatedly Aug 2026: GEA-5582/5943/6100). When
+# the failing migration is provably already-applied, stamp its version and retry.
+# ponytail: only stamps "already-satisfied" DDL errors (42704 undefined_object /
+# 42P07 duplicate_table / 42710 duplicate_object / "already exists"). ANY other
+# migrate error still returns non-zero and wedges the gate — correct, since a
+# genuinely broken migration must never be silently skipped. Root fix is not
+# backdating timestamps (knowledge/elixir-sql-gotchas.md).
+migrate_with_selfheal() {
+  local attempt out ver
+  local pg="postgresql://localhost:${POSTGRES_PORT}/${DATABASE_NAME}"
+  for attempt in $(seq 1 8); do
+    out=$(direnv exec . mix ecto.migrate 2>&1)
+    echo "$out" | tail -5
+    # No SQL/Postgrex error this run → migrate is done (applied or nothing to do).
+    echo "$out" | grep -qE '\(Postgrex\.Error\)|ERROR [0-9]{5}' || return 0
+    # Only self-heal already-satisfied schema errors; surface anything else.
+    echo "$out" | grep -qE 'ERROR 42704|ERROR 42P07|ERROR 42710|already exists' || return 1
+    ver=$(echo "$out" | grep -oE '== Running [0-9]{14}' | tail -1 | grep -oE '[0-9]{14}')
+    [ -z "$ver" ] && return 1
+    echo "Self-heal: migration $ver already applied (schema at target, version row missing); stamping and retrying."
+    direnv exec . psql "$pg" -c \
+      "INSERT INTO schema_migrations (version, inserted_at) VALUES (${ver}, NOW()) ON CONFLICT (version) DO NOTHING;" \
+      >/dev/null 2>&1 || return 1
+  done
+  return 1
+}
+
 if [ "$BACKEND_HEALTHY" = "false" ]; then
   direnv exec . devenv processes down 2>/dev/null || true
   sleep 2
@@ -327,7 +361,7 @@ if [ "$BACKEND_HEALTHY" = "false" ]; then
     direnv exec . pg_isready -q -h localhost -p "$POSTGRES_PORT" 2>/dev/null && break
     sleep 3
   done
-  direnv exec . mix ecto.migrate 2>&1 | tail -5 || true
+  migrate_with_selfheal || echo "WARN: ecto.migrate did not fully succeed; the health gate below will judge the slot."
   echo "Waiting for backend on port $PHOENIX_PORT..."
   BACKEND_UP=false
   BOOT_RETRIES=4

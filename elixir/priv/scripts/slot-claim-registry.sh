@@ -225,6 +225,22 @@ if [ -z "$PHOENIX_PORT" ] || [ -z "$FRONTEND_PORT" ] || [ -z "$POSTGRES_PORT" ];
   release_lease_and_fail
 fi
 
+# Mail safety (procurement): a worker slot MUST swallow outbound mail to
+# /dev/mailbox, never send real email. gf_procurement's dev config defaults to
+# the Mandrill adapter (real send) unless MAILER_ADAPTER=local is set — and a
+# GEA-5377 QA run once sent real mail this way, where invented QA addresses
+# hard-bounce against our sending reputation. The slot's long-lived .env is the
+# source of truth and some were provisioned before this was enforced, so ensure
+# the line is present on every claim; if we had to add it, a backend already up
+# on the old env is still sending real mail, so force the restart below.
+MAIL_ENV_FIXED=false
+if [ "$POOL" != "platform" ] && [ -f .env ] &&
+   ! grep -qE '^[[:space:]]*(export[[:space:]]+)?MAILER_ADAPTER=local[[:space:]]*$' .env; then
+  printf '\n# Mail safety (symphony): swallow outbound mail to /dev/mailbox, never real.\nexport MAILER_ADAPTER=local\n' >> .env
+  MAIL_ENV_FIXED=true
+  echo "Mail safety: added MAILER_ADAPTER=local to $SLOT_NAME/.env (was missing)."
+fi
+
 # Skip the heavy stop/start cycle when the backend is already healthy.
 # gf_platform's main_proxy routes by Host; procurement answers on localhost.
 # Healthy = Phoenix answers with 200 (live GraphQL) or 410 (procurement's
@@ -244,6 +260,14 @@ HEALTH_HOST="localhost"
 [ "$POOL" = "platform" ] && HEALTH_HOST="local.gearflow.com"
 if backend_healthy; then
   BACKEND_HEALTHY=true
+fi
+
+# A backend that came up before the mail fix is still on the old env (real
+# Mandrill), so a healthy check is not good enough — force the restart so it
+# reloads .env with MAILER_ADAPTER=local.
+if [ "$MAIL_ENV_FIXED" = "true" ] && [ "$BACKEND_HEALTHY" = "true" ]; then
+  echo "Mail safety: backend is up on the old env; forcing a restart to apply MAILER_ADAPTER=local."
+  BACKEND_HEALTHY=false
 fi
 
 # Reset to a clean state. Designated slots are ephemeral; .env/.envrc are

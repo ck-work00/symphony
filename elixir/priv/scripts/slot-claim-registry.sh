@@ -231,13 +231,12 @@ fi
 # GEA-5377 QA run once sent real mail this way, where invented QA addresses
 # hard-bounce against our sending reputation. The slot's long-lived .env is the
 # source of truth and some were provisioned before this was enforced, so ensure
-# the line is present on every claim; if we had to add it, a backend already up
-# on the old env is still sending real mail, so force the restart below.
-MAIL_ENV_FIXED=false
+# the line is present on every claim (the restart below judges the RUNNING
+# process, not this file, so a live server on the old env is caught even when
+# .env already reads correctly).
 if [ "$POOL" != "platform" ] && [ -f .env ] &&
    ! grep -qE '^[[:space:]]*(export[[:space:]]+)?MAILER_ADAPTER=local[[:space:]]*$' .env; then
   printf '\n# Mail safety (symphony): swallow outbound mail to /dev/mailbox, never real.\nexport MAILER_ADAPTER=local\n' >> .env
-  MAIL_ENV_FIXED=true
   echo "Mail safety: added MAILER_ADAPTER=local to $SLOT_NAME/.env (was missing)."
 fi
 
@@ -263,11 +262,16 @@ if backend_healthy; then
 fi
 
 # A backend that came up before the mail fix is still on the old env (real
-# Mandrill), so a healthy check is not good enough — force the restart so it
-# reloads .env with MAILER_ADAPTER=local.
-if [ "$MAIL_ENV_FIXED" = "true" ] && [ "$BACKEND_HEALTHY" = "true" ]; then
-  echo "Mail safety: backend is up on the old env; forcing a restart to apply MAILER_ADAPTER=local."
-  BACKEND_HEALTHY=false
+# Mandrill), and a healthy check does not prove otherwise — the adapter is fixed
+# at boot, so .env reading correctly is no guarantee the LIVE process has it.
+# Inspect the running beam's own environment; if it lacks MAILER_ADAPTER=local,
+# force a restart so the next boot swallows mail. (Procurement only.)
+if [ "$POOL" != "platform" ] && [ "$BACKEND_HEALTHY" = "true" ]; then
+  beam_pid=$(lsof -nP -iTCP:"$PHOENIX_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  if [ -n "$beam_pid" ] && ! ps eww -p "$beam_pid" 2>/dev/null | grep -q 'MAILER_ADAPTER=local'; then
+    echo "Mail safety: backend (pid $beam_pid) is running WITHOUT MAILER_ADAPTER=local; forcing a restart."
+    BACKEND_HEALTHY=false
+  fi
 fi
 
 # Reset to a clean state. Designated slots are ephemeral; .env/.envrc are
